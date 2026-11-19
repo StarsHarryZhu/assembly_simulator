@@ -2,8 +2,8 @@
 /**
  * Instruction set tab: pick an instruction (or type a line), set its operands, and see the machine code as bit
  * fields. Pseudo-instructions show every basic instruction they expand to. Below, a demo runs the line.
- * Instructions with a reference table (syscall services, CP0, ...) show it under the title card; a line
- * that starts with a directive shows the directive table instead, with that directive highlighted.
+ * Instructions with a reference table (syscall services, CP0, ...) show it below the demo; a line that
+ * starts with a directive shows the directive table instead, with that directive highlighted.
  */
 import type { Text } from '../../core/i18n'
 import { lang, t, tx } from '../i18n'
@@ -228,8 +228,6 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
         </template>
       </div>
 
-      <ReferenceTable v-for="r in references" :key="r.id" :table="r" :current="directive ?? undefined" />
-
       <div v-if="analysis.ok" class="card box">
         <div class="code-head">
           <span class="small muted">{{ t('机器码', 'Machine code') }}</span>
@@ -260,6 +258,8 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
       </div>
 
       <DemoRunner v-if="analysis.ok" :isa="isa" :analysis="analysis" />
+
+      <ReferenceTable v-for="r in references" :key="r.id" :table="r" :current="directive ?? undefined" />
     </section>
   </div>
 </template>

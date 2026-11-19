@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * One reference table under the instruction set tab's title card (syscall services, coprocessor 0
+ * One reference table at the bottom of the instruction set tab (syscall services, coprocessor 0
  * registers, exception codes, floating-point flags, directives). Rows that list registers get two
  * columns, read (green) and written (red), as in the register panel; other rows get one column of text
  * with their note and example. `current` highlights one row. Below about 620 px of width each row folds

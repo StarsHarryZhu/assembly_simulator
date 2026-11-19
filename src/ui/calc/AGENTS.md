@@ -16,7 +16,7 @@ words back into assembly with fields and notes.
 - The instruction set tab can be opened from the editor with a `{ line, n }` request; the request replaces
   the one-line input and clears the per-label addresses, it never runs anything.
 - Reference tables come from the plugin's `references`; every table listing the analysed mnemonic is
-  shown right after the title card, and the search box also matches the titles of their rows.
+  shown below the demo, and the search box also matches the titles of their rows.
 - Directives are listed in the picker (their own group, and under All). A line that starts with a
   directive shows a title card and the directive table with its row highlighted, never the
   "only one instruction" error.
