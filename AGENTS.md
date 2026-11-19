@@ -45,7 +45,8 @@ produce the golden test fixtures. Interfaces for other ISAs (ARM, x86-64) exist 
 - `package-lock.json` — locked dependency versions.
 - `vite.config.ts` — Vue and single-file plugins, relative base, Vitest settings.
 - `tsconfig.json` — strict TypeScript settings for sources and tests.
-- `README.md` — Chinese overview for people: features, usage, development, deployment.
+- `README.md` — English overview for people: features, usage, development, deployment.
+- `README-zh.md` — Chinese version of the same overview; keep the two in sync.
 - `LICENSE` — MIT license text; the copyright notice is what makes the license valid.
 - `src` — the application: core contracts, the MIPS engine, and the Vue UI.
 - `tests` — unit tests, golden comparisons against MARS, and the AGENTS.md checker.

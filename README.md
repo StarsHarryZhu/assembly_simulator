@@ -1,60 +1,62 @@
-# 汇编模拟器（Assembly Simulator）
+# Assembly Simulator
 
-在浏览器里写、汇编、单步运行 MIPS 汇编的教学工具。指令集和行为对齐 **MARS 4.5**，但引擎是我们自己写的，网页里不包含任何 MARS 的代码。构建结果是一个独立的 `index.html`，放到 GitHub Pages 上能用，下载到本地双击也能用，不需要联网。
+**English** | [中文](README-zh.md)
 
-在线使用：<https://starsharryzhu.github.io/assembly_simulator/>（源码在 [GitHub](https://github.com/StarsHarryZhu/assembly_simulator)，以 [MIT](LICENSE) 许可证开源）。
+Write, assemble, and step through MIPS assembly in the browser. The instruction set and behaviour match **MARS 4.5**, but the engine is our own: no MARS code ships in the page. The build is a single self-contained `index.html` that works on GitHub Pages and also opens from a double-click on your desktop, with no network needed.
 
-界面支持**中文和英文**：第一次打开时跟随系统语言（不是中文也不是英文时用英文），之后可以在右上角切换，会记住你的选择。也可以切换浅色和深色主题。
+Try it online: <https://starsharryzhu.github.io/assembly_simulator/> (source on [GitHub](https://github.com/StarsHarryZhu/assembly_simulator), open source under [MIT](LICENSE)).
 
-## 三个栏目
+The interface is available in **Chinese and English**: it follows the system language on first visit (English for anything else), you can switch in the top-right corner, and your choice is remembered. Light and dark themes can be switched too.
 
-### 编辑运行
+## Three tabs
 
-- **编辑器**：
-  - 语法高亮：`.data`、`.text` 这类分段指令用单独的颜色并带一条底色，而且总是顶格写（在缩进的行里打出来也会自动移到行首）；标签定义和对已定义标签的引用（如 `jal sum`、`la $a0, msg`）都是粉色。
-  - 自动补全的样式仿照 VS Code：行首提示指令（右侧显示说明和全部写法），`$` 后提示寄存器，操作数位置提示已定义的标签；Enter 或 Tab 确认。
-  - 按 Tab 缩进 4 个空格（制表符也按 4 格显示），示例程序同样缩进 4 格。
-  - 输入 `"` `'` `(` `[` `{` 时自动补上另一半，光标停在中间；接着输入另一半会直接跳过去，在两者之间按退格会一起删掉。单词后面的撇号（如注释里的 don't）不会补。
-  - 点行号设断点；汇编错误直接标在出错的位置；正在执行的那一行高亮。
-  - “新建”开一个空文件；也可以打开 `.asm` 文件（或直接拖进编辑器）、下载成 `.asm`，或者从“示例程序”里选一个。新建、打开或换示例时，如果当前代码改过还没保存（下载过、刚打开或刚新建的都算已保存），会先问你：保存（下载成 .asm）、不保存，还是取消。切换界面语言时，示例程序的注释也会跟着换（代码和行号不变，正在运行的程序不受影响）。代码会自动保存在浏览器里。
-- **不需要单独汇编**：代码改过之后，点运行、单步、上一步、自动或重置时会先自动重新汇编。比较慢的操作会显示一个转圈的加载动画。
-- **三种执行方式**：
-  - **单步**：默认一次执行一行源码，伪指令（如 `li`、`la`、`blt`）展开成的几条真指令一次执行完；工具栏的“单步按”可以改成“真指令”，一次只执行一条真指令（和 MARS 一样），这时会标出“伪指令第 k/N 条”。
-  - **运行**：一直执行到结束、断点、需要输入或出错。程序分成约 12 毫秒一段来跑，每段之间让浏览器刷新界面、响应点击，所以长时间运行时页面不会卡住，随时可以暂停。
-  - **自动**：按设定的间隔（0–2000 毫秒，运行中可调）一步一步自动执行。
-  - **上一步**最多可以撤销 2000 步，寄存器颜色、栈和内存也一起回到当时的状态。
-- **终端**：程序输出直接显示在这里，需要输入时在终端里打字。另有“消息”页（汇编和运行时的报错）和“文件”页（程序用 syscall 13–16 读写的文件，可以上传和下载）。
-- **寄存器**：全部寄存器放在一个面板里，分“通用”（32 个 + HI/LO）、“浮点”（`$f0`–`$f31` 和 8 个条件位）、“CP0”三页。**灰色**是还没用到，**绿色**是被读过，**红色**是被改过；上一步改过的寄存器会用更深的红色一直标着，直到执行下一步。点任何一个格子，可以看它的十六进制、二进制、有符号和无符号十进制、字符，浮点寄存器还能看 float/double。
-- **栈**：从 `$sp` 往上看栈里的内容，默认显示最上面几个字，可以展开到栈底，标出 `$sp`、`$fp` 的位置。
-- **内存**：每条 `.data` 声明是一个条目（标签、类型、地址、值），点开看每个元素；`sbrk` 分配的堆块、写到其他地址的数据也会各成一条。刚改过的地方会高亮。
-- **机器码视图**：编辑器上方可以切换到汇编结果（地址、机器码、真指令、对应源码），点一行就在“反汇编”栏目里打开它。
+### Edit & run
 
-快捷键：F5 运行、F6 自动、F7 单步、F8 上一步、F9 暂停、F10 重置。
+- **Editor**:
+  - Syntax highlighting: section directives (`.data`, `.text`) get their own colour and a background, and always sit in the first column (typing one on an indented line moves it to the start). Label definitions and references to defined labels (such as `jal sum` or `la $a0, msg`) are pink.
+  - VS Code-style suggestions: at the start of a line it lists instructions (with a description and every form on the right), after `$` it lists registers, and in operand position it lists defined labels. Enter or Tab accepts.
+  - Tab indents by 4 spaces (tab characters also display as 4 spaces), and the example programs are indented by 4 spaces.
+  - Typing `"` `'` `(` `[` `{` also inserts the closing character with the cursor in between; typing that closing character jumps over it, and Backspace between the pair deletes both. An apostrophe after a word (as in don't inside a comment) is left alone.
+  - Click a line number to set a breakpoint. Assembly errors are marked at the exact position, and the line being executed is highlighted.
+  - "New" starts an empty file; you can also open an `.asm` file (or drag one into the editor), download it as `.asm`, or pick one of the example programs. If the current code has unsaved changes (changed since opening, creating, or downloading), switching asks first: save (download as `.asm`), don't save, or cancel. Switching the interface language also switches the example programs' comments (code and line numbers stay the same; a running program is untouched). Code is saved in the browser automatically.
+- **No separate assemble step**: once the code changes, run, step, undo, auto, and reset all reassemble first. Slow operations show a spinner.
+- **Three ways to execute**:
+  - **Step** runs one source line by default; pseudo-instructions (`li`, `la`, `blt`) expand to several real instructions that run together. The "step by" switch in the toolbar changes this to "basic instruction" (one real instruction per step, as in MARS), which also reports "pseudo-instruction k/N".
+  - **Run** executes until the end, a breakpoint, input, or an error. The program runs in slices of about 12 ms so the page stays responsive and redraws between slices; you can pause at any time.
+  - **Auto** steps automatically at a chosen interval (0–2000 ms, adjustable while running).
+  - **Undo** goes back up to 2000 steps; register colours, the stack, and memory return to their state at that point.
+- **Terminal**: program output appears here, and you type input here when the program asks for it. There are also a "Messages" page (assembly and runtime errors) and a "Files" page (files the program reads and writes with syscalls 13–16, which you can upload and download).
+- **Registers**: every register in one panel, on three pages: general (32 registers plus HI/LO), floating point (`$f0`–`$f31` and the 8 condition bits), and CP0. **Grey** means not used yet, **green** read, **red** written; registers written by the last step stay dark red until the next step. Click any cell to see its hexadecimal, binary, signed and unsigned decimal, and character value; floating-point registers also show float and double.
+- **Stack**: the contents from `$sp` up to the stack base, the top few words by default with an option to expand to the base, marking where `$sp` and `$fp` point.
+- **Memory**: one entry per `.data` declaration (label, type, address, value); expand an entry to see every element. Blocks allocated by `sbrk` and data written elsewhere each get their own entry too. Recently changed places are highlighted.
+- **Machine code view**: switch the area above the editor to the assembly result (address, machine code, real instruction, matching source line). Click a row to open it in the Disassembler tab.
 
-### 指令集
+Shortcuts: F5 run, F6 auto, F7 step, F8 undo, F9 pause, F10 reset.
 
-从列表里选一条指令（可按 R / I / J / REGIMM / SPECIAL2 / 陷阱 / CP0 / 浮点 / 伪指令筛选，也可以搜索中文或英文说明），或者直接输入一行汇编。下面会显示它的机器码，每个字按位域画出来，标明每段是什么意思。伪指令会列出展开后的每一条真指令。最下面会在真正的模拟器上把这一行跑一遍，显示执行前后读写了哪些寄存器和内存。
+### Instruction set
 
-### 反汇编
+Pick an instruction from the list (filter by R / I / J / REGIMM / SPECIAL2 / traps / CP0 / floating point / pseudo-instructions, or search the Chinese or English description), or type a line of assembly. The machine code appears below with each word drawn as bit fields, showing what every range means. Pseudo-instructions list each real instruction they expand to. At the bottom the line is executed on the real simulator, showing which registers and memory it read and wrote.
 
-每行输入一个机器字（`0x` 十六进制、`0b` 二进制、32 位 0/1 或十进制），可以在行尾写 `@ 地址` 来指定它所在的位置（影响分支和跳转目标的计算），得到汇编文本、位域和说明。
+### Disassembler
 
-## 支持范围
+Enter one machine word per line (`0x` hexadecimal, `0b` binary, 32 bits of 0 and 1, or decimal). Append `@ address` to say where the word lives (which affects branch and jump targets), and get the assembly text, its bit fields, and a note.
 
-- MARS 4.5 的**全部 155 条真指令**（整数、HI/LO、SPECIAL2、陷阱、CP0、单精度和双精度浮点），以及**全部伪指令写法**，展开方式和 MARS 一致。
-- 汇编指令：`.text` `.data` `.ktext` `.kdata` `.word` `.half` `.byte` `.ascii` `.asciiz` `.space` `.align` `.float` `.double` `.globl` `.extern` `.eqv` `.macro`/`.end_macro` `.include` `.set`。
-- **全部 39 个系统调用**（1–17、30–36、40–44、50–59）：输入会在终端里等你打字；31/33 会真的发声；32 会真的等待；40–44 的随机数和 MARS 用同一种算法，设了种子结果一样；50–59 弹出对话框。
-- 异常：溢出、陷阱、地址不对齐或越界、`break` 等。程序里写了 `.ktext` 异常处理程序就跳到 `0x80000180`，否则终止并给出和 MARS 一样的报错。
-- 内存布局和 MARS 默认配置一样：代码段 `0x00400000`、数据段 `0x10010000`、堆 `0x10040000`、`$gp = 0x10008000`、`$sp = 0x7fffeffc`，小端，不启用延迟分支。
-- 速度：大约每秒 500 万条指令。
+## Coverage
 
-**故意没有做的**：MARS 的工具（MMIO 键盘和显示器、位图显示器等）、延迟分支、紧凑内存布局。另外，把指令写在 `.data` 里在这里会报错，而 MARS 会默默接受。
+- **All 155 basic instructions** of MARS 4.5 (integer, HI/LO, SPECIAL2, traps, CP0, single- and double-precision floating point) and **every pseudo-instruction form**, expanding the same way as MARS.
+- Directives: `.text` `.data` `.ktext` `.kdata` `.word` `.half` `.byte` `.ascii` `.asciiz` `.space` `.align` `.float` `.double` `.globl` `.extern` `.eqv` `.macro`/`.end_macro` `.include` `.set`.
+- **All 39 syscalls** (1–17, 30–36, 40–44, 50–59): input waits for you to type in the terminal; 31 and 33 really make a sound; 32 really waits; 40–44 use the same random-number algorithm as MARS, so the same seed gives the same numbers; 50–59 open dialogs.
+- Exceptions: overflow, traps, misaligned and out-of-range addresses, `break`, and so on. With a `.ktext` handler the program jumps to `0x80000180`; without one it stops with the same message as MARS.
+- Memory layout matches MARS's default configuration: text at `0x00400000`, data at `0x10010000`, heap at `0x10040000`, `$gp = 0x10008000`, `$sp = 0x7fffeffc`, little-endian, no delayed branching.
+- Speed: about 5 million instructions per second.
 
-**ARM64 和 x86-64**：架构选择里已经列出来，接口也预留好了，但还没有实现。
+**Deliberately not implemented**: MARS's tools (MMIO keyboard and display, bitmap display, and so on), delayed branching, and the compact memory configuration. Instructions inside `.data` are an error here, while MARS silently accepts them.
 
-## 开发
+**ARM64 and x86-64**: both appear in the architecture selector and their interfaces exist, but they are not implemented.
 
-需要 Node.js 22.12 以上（Pages 工作流用的是 Node 24）。
+## Development
+
+Requires Node.js 22.12 or newer (the Pages workflow uses Node 24).
 
 ```bash
 npm install
@@ -64,47 +66,47 @@ npm install
 npm run dev
 ```
 
-| 命令 | 作用 |
+| Command | What it does |
 | --- | --- |
-| `npm run dev` | 启动开发服务器 |
-| `npm test` | 跑全部测试（单元测试、和 MARS 的标准答案比对、AGENTS.md 格式检查） |
-| `npm run typecheck` | TypeScript 和 Vue 类型检查 |
-| `npm run build` | 生成 `dist/index.html`（单个文件，可以直接双击打开） |
-| `npm run preview` | 本地预览构建结果 |
-| `npm run golden` | 用 MARS 重新生成标准答案（见下文） |
+| `npm run dev` | Start the development server |
+| `npm test` | Run all tests (unit tests, comparisons against MARS golden results, AGENTS.md check) |
+| `npm run typecheck` | TypeScript and Vue type checking |
+| `npm run build` | Build `dist/index.html` (a single file you can open by double-clicking) |
+| `npm run preview` | Preview the build locally |
+| `npm run golden` | Regenerate the golden results with MARS (see below) |
 
-### 和 MARS 比对
+### Comparing against MARS
 
-`tests/golden/programs/` 里的测试程序和全部示例程序，都事先用 MARS 4.5 跑过一遍，结果（机器码、数据段、终端输出、最终寄存器、报错）存在 `tests/golden/expected/`，已经提交进仓库。`npm test` 会拿我们的引擎逐项比对，平时不需要 Java，也不需要 MARS。
+The test programs in `tests/golden/programs/` and all the example programs were run through MARS 4.5 beforehand, and the results (machine code, data segment, terminal output, final registers, errors) are committed in `tests/golden/expected/`. `npm test` compares our engine against them point by point, so no Java or MARS is needed normally.
 
-只有新增或修改了测试程序、示例程序时，才需要重新生成。这需要 Java 和 MARS 4.5 的 jar（不放在仓库里）：
+Regenerating is only necessary when test or example programs change. It needs Java and the MARS 4.5 jar (which is not kept in the repository):
 
 ```bash
 MARS_JAR=~/.cache/assembly-simulator/Mars4_5.jar npm run golden
 ```
 
-MARS 只用来生成标准答案，网站本身只运行我们自己的引擎。
+MARS is only used to produce the golden results; the site itself runs our own engine.
 
-### 加一种语言的文字
+### Adding text in another language
 
-界面上的每一处文字都同时写了中文和英文：组件里用 `t('中文', 'English')`，引擎里用 `L('中文', 'English')` 或 `T('中文', 'English')`。真指令的英文说明在 `src/isa/mips/instructions/en.ts`。示例程序的英文版在 `src/isa/mips/examples/en/`，代码必须和中文版一模一样，只有注释不同（有测试检查）。
+Every string on the interface is written in both Chinese and English: `t('中文', 'English')` in components, and `L('中文', 'English')` or `T('中文', 'English')` in the engine. The English descriptions of real instructions are in `src/isa/mips/instructions/en.ts`. The English versions of the example programs are in `src/isa/mips/examples/en/`: the code must be identical to the Chinese version and only the comments may differ (a test enforces this).
 
-## 部署
+## Deployment
 
-`.github/workflows/pages.yml` 会在推送到 `main` 时跑测试、构建，并把 `dist/` 发布到 GitHub Pages。本仓库已经设成 **Settings → Pages → Source = GitHub Actions**；复制到新仓库时同样要设一次。
+`.github/workflows/pages.yml` runs the tests and the build on every push to `main`, then publishes `dist/` to GitHub Pages. This repository is already set to **Settings → Pages → Source = GitHub Actions**; set it the same way when you copy the project to a new repository.
 
-## 目录
+## Layout
 
-| 位置 | 内容 |
+| Path | Contents |
 | --- | --- |
-| `src/core` | 与架构无关的接口、运行会话、内存、格式化、语言 |
-| `src/isa/mips` | MIPS32 引擎：指令表、汇编器、CPU、系统调用、反汇编、示例程序 |
-| `src/ui` | Vue 界面：编辑运行、指令集、反汇编 |
-| `tests` | 测试和 MARS 标准答案 |
-| `scripts` | 生成标准答案的脚本 |
+| `src/core` | Architecture-independent interfaces, the run session, memory, formatting, and language |
+| `src/isa/mips` | The MIPS32 engine: instruction table, assembler, CPU, syscalls, disassembler, example programs |
+| `src/ui` | Vue interface: edit & run, instruction set, disassembler |
+| `tests` | Tests and MARS golden answers |
+| `scripts` | Scripts that generate the golden answers |
 
-每个文件夹里都有一份英文的 `AGENTS.md`，说明这个文件夹负责什么、有哪些约束、每个文件做什么、进度如何。
+Every folder contains an English `AGENTS.md` explaining what the folder is responsible for, its constraints, what each file does, and its progress.
 
-## 许可证
+## License
 
-代码以 [MIT 许可证](LICENSE) 开源，版权 © 2026 Starfield：可以自由使用、修改、再分发，保留版权声明即可；代码按「原样」提供，不带任何担保。
+The code is open source under the [MIT License](LICENSE), © 2026 Starfield: use, modify, and redistribute it freely as long as you keep the copyright notice. It is provided "as is", without warranty of any kind.
