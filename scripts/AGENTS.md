@@ -22,4 +22,4 @@ Java helper that lists the instruction forms MARS knows, used when checking our 
 
 ## 4. Progress
 
-Done: fixtures for 22 test programs and 7 examples. Not done: nothing outstanding.
+Done: fixtures for 31 test programs and 7 examples. Not done: nothing outstanding.

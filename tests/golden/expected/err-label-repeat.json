@@ -1,0 +1,13 @@
+{
+ "name": "err-label-repeat",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 4,
+    "col": 7,
+    "message": "malformed expression"
+   }
+  ]
+ }
+}

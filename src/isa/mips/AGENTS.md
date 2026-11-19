@@ -38,4 +38,10 @@ generated from it, so they cannot drift apart.
 
 Done: every MARS 4.5 basic and pseudo instruction, directives, macros, kernel handlers, all syscalls,
 both languages. Not done: MARS tools (MMIO devices), delayed branching, the compact memory map.
-Known differences: instructions written inside `.data` are an error here; MARS accepts them silently.
+Known differences: instructions written inside `.data` are an error here, while MARS accepts them
+silently; decimal literals above 0xFFFFFFFF are rejected (MARS wraps them modulo 2^32); data lists
+such as `.word 1+2` are rejected instead of being split into separate values; more than one label on
+a data line is an error (MARS silently loses the data); `.align` above 21 is rejected (MARS accepts
+the directive but then rejects any data that follows). A differential audit against MARS 4.5 (543
+instruction-form examples and 118 assembler edge cases) leaves only the deliberate `.data`
+instruction difference.

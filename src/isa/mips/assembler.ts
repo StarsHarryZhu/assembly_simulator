@@ -194,6 +194,12 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
           diags.error(here, first.col, 'bad-eqv', L('.eqv 的写法是：.eqv 名字 替换内容', '.eqv is written as: .eqv name replacement'))
           continue
         }
+        const lower = nameTok.text.toLowerCase()
+        if (MNEMONICS.includes(lower) || KNOWN_DIRECTIVES.has(lower)) {
+          // MARS refuses to redefine an instruction or directive through .eqv.
+          diags.error(here, first.col, 'bad-eqv', L(`.eqv 不能用指令或伪操作的名字 "${nameTok.text}"`, `.eqv cannot use the instruction or directive name "${nameTok.text}"`))
+          continue
+        }
         eqv.set(nameTok.text, substituteEqv(raw.slice(2)))
         out.push({ file: file.name, line: lineNo, source: text, tokens: [] })
         continue
@@ -245,6 +251,7 @@ interface WordFixup {
   line: Line
   token: Token
   addr: number
+  size: 1 | 2 | 4
 }
 
 export function assemble(main: SourceFile, options: AssembleOptions = {}): AssembleResult {
@@ -299,8 +306,9 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
   /* ---------- pass 1 ---------- */
   for (const line of lines) {
     let t = line.tokens
-    // labels
-    while (t.length >= 2 && t[0]!.kind === 'ident' && t[1]!.kind === 'colon') {
+    // MARS allows at most one label per line; a second `name:` is handed to the instruction
+    // matcher, which then reports "too many operands" at the same token MARS points at.
+    if (t.length >= 2 && t[0]!.kind === 'ident' && t[1]!.kind === 'colon') {
       define(line, t[0]!)
       t = t.slice(2)
     }
@@ -392,8 +400,8 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
     switch (d) {
       case '.align': {
         const n = args[0]
-        if (!n || n.kind !== 'int' || n.value! < 0 || n.value! > 3) {
-          diags.error(line, head.col, 'bad-align', L('.align 需要 0 到 3 的整数（按 2 的 n 次方字节对齐）', '.align needs an integer from 0 to 3 (aligns to 2^n bytes)'))
+        if (!n || n.kind !== 'int' || n.value! < 0 || n.value! > 21) {
+          diags.error(line, head.col, 'bad-align', L('.align 需要 0 到 21 的整数（按 2 的 n 次方字节对齐）', '.align needs an integer from 0 to 21 (aligns to 2^n bytes)'))
           return
         }
         if (n.value === 0) autoAlign = false
@@ -444,8 +452,10 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
         for (let i = 0; i < args.length; i++) {
           const a = args[i]!
           let repeat = 1
+          let hasRepeat = false
           if (args[i + 1]?.kind === 'colon' && args[i + 2]?.kind === 'int') {
             repeat = Math.max(0, args[i + 2]!.value!)
+            hasRepeat = true
             i += 2
           }
           if (a.kind === 'int') {
@@ -462,14 +472,15 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
               addr[seg] = (addr[seg] + size) >>> 0
               count++
             }
-          } else if (a.kind === 'ident' && size === 4) {
-            for (let r = 0; r < repeat; r++) {
-              fixups.push({ line, token: a, addr: addr[seg] })
-              addr[seg] = (addr[seg] + 4) >>> 0
-              count++
-            }
+          } else if (a.kind === 'ident' && !hasRepeat) {
+            // MARS truncates a label to the low 8/16/32 bits of its address without a warning.
+            fixups.push({ line, token: a, addr: addr[seg], size })
+            addr[seg] = (addr[seg] + size) >>> 0
+            count++
+          } else if (a.kind === 'ident') {
+            diags.error(line, a.col, 'bad-data-value', L(`标签 "${a.text}" 不能带 ":重复次数"`, `Label "${a.text}" cannot have a ":count" repeat`), a.text.length)
           } else {
-            diags.error(line, a.col, 'bad-data-value', L(`"${a.text}" 不是有效的整数${size === 4 ? '或标签' : ''}`, `"${a.text}" is not a valid integer${size === 4 ? ' or label' : ''}`), a.text.length)
+            diags.error(line, a.col, 'bad-data-value', L(`"${a.text}" 不是有效的整数或标签`, `"${a.text}" is not a valid integer or label`), a.text.length)
           }
         }
         declare(line, d.slice(1) as DataKind, start, count * size, count)
@@ -489,13 +500,26 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
             i += 2
           }
           let v: number
-          if (a.kind === 'int') v = a.value!
-          else if (a.kind === 'real') v = a.real!
-          else {
+          if (a.kind === 'int') {
+            if (/^[-+]?(0[xX]|#)/.test(a.text)) {
+              diags.error(line, a.col, 'bad-data-value', L(`"${a.text}" 不是有效的浮点数（浮点数不能用十六进制写法）`, `"${a.text}" is not a valid floating point constant (floats cannot be written in hexadecimal)`), a.text.length)
+              continue
+            }
+            // MARS parses a float token as a decimal number, so ".float 010" is 10.0, not octal 8;
+            // only a character literal keeps its integer value.
+            v = a.text[0] === "'" ? a.value! : Number(a.text)
+          } else if (a.kind === 'real') {
+            // MARS rejects a leading '-' before Infinity/NaN (it reads '-' as a unary operator).
+            if (a.text === '-Infinity' || a.text === '-NaN') {
+              diags.error(line, a.col, 'bad-data-value', L(`"${a.text}" 不是有效的数字`, `"${a.text}" is not a valid number`), a.text.length)
+              continue
+            }
+            v = a.real!
+          } else {
             diags.error(line, a.col, 'bad-data-value', L(`"${a.text}" 不是有效的数字`, `"${a.text}" is not a valid number`), a.text.length)
             continue
           }
-          if (size === 4 && Number.isFinite(v) && Math.abs(v) > 3.4028234663852886e38) {
+          if (size === 4 && !Number.isNaN(v) && (!Number.isFinite(v) || Math.abs(v) > 3.4028234663852886e38)) {
             diags.error(line, a.col, 'float-range', L(`"${a.text}" 超出单精度浮点数的范围`, `"${a.text}" is out of range for a single-precision float`), a.text.length)
             continue
           }
@@ -530,7 +554,7 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
 
   for (const f of fixups) {
     const v = lookup(f.line, f.token)
-    if (v != null) putBytes(f.addr, v, 4)
+    if (v != null) putBytes(f.addr, v, f.size)
   }
 
   const labelAt = new Map<number, string>()

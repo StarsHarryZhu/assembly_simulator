@@ -25,4 +25,4 @@ AGENTS.md checker keeps the folder documentation in the required shape.
 
 ## 4. Progress
 
-Done: 29 golden programs and the unit suites pass. Not done: nothing outstanding.
+Done: 38 golden fixtures and the unit suites pass. Not done: nothing outstanding.

@@ -63,8 +63,9 @@ function mars(args, input) {
 function parseErrors(text) {
   const errors = []
   for (const line of text.split('\n')) {
-    const m = line.match(/^Error in .*? line (\d+) column (\d+): (.*)$/)
-    if (m) errors.push({ line: Number(m[1]), col: Number(m[2]), message: m[3] })
+    // MARS omits the column for a few whole-line errors (an unclosed .macro, for example).
+    const m = line.match(/^Error in .*? line (\d+)(?: column (\d+))?: (.*)$/)
+    if (m) errors.push({ line: Number(m[1]), col: m[2] === undefined ? 0 : Number(m[2]), message: m[3] })
   }
   return errors
 }

@@ -1,0 +1,13 @@
+{
+ "name": "err-float-1e999",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 3,
+    "col": 8,
+    "message": "\"1e999\" is an out-of-range value"
+   }
+  ]
+ }
+}

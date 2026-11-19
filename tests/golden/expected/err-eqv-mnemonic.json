@@ -1,0 +1,13 @@
+{
+ "name": "err-eqv-mnemonic",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 3,
+    "col": 1,
+    "message": "Malformed .eqv directive"
+   }
+  ]
+ }
+}

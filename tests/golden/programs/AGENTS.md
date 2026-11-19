@@ -21,4 +21,4 @@ the error text and position are compared too.
 
 ## 4. Progress
 
-Done: 22 programs. Not done: nothing outstanding.
+Done: 31 programs. Not done: nothing outstanding.

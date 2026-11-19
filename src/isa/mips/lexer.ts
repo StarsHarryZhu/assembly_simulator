@@ -75,6 +75,9 @@ export function parseInteger(text: string): number | null {
   if (value >= -2147483648n && value <= 2147483647n) return Number(value)
   // MARS accepts exactly 8 hex digits as a 32-bit two's complement pattern.
   if (!neg && radix === 16 && s.length === 8) return Number(BigInt.asIntN(32, value))
+  // ... and unsigned decimal up to 0xFFFFFFFF as the same bit pattern (2147483648 -> -2147483648).
+  // MARS silently wraps anything larger modulo 2^32; we reject that instead of hiding the overflow.
+  if (!neg && radix === 10 && value <= 4294967295n) return Number(BigInt.asIntN(32, value))
   return null
 }
 
@@ -111,6 +114,23 @@ const REAL = /^[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$|^[+-]?(?:Infinity|N
 
 const isIdentStart = (c: string) => /[A-Za-z_.$]/.test(c)
 const isIdentChar = (c: string) => /[A-Za-z0-9_.$]/.test(c)
+
+/**
+ * A '+' starts a signed number only where an operand may start: at the beginning of the line,
+ * after a comma or '(', or directly after a directive. Elsewhere it is the binary plus operator
+ * (",$zero,+5" is +5, while "label +4" keeps its plus token and still matches the label+constant
+ * pseudo forms).
+ */
+function atOperandStart(line: string, i: number): boolean {
+  let j = i - 1
+  while (j >= 0 && (line[j] === ' ' || line[j] === '\t')) j--
+  if (j < 0) return true
+  const prev = line[j]!
+  if (prev === ',' || prev === '(') return true
+  let k = j
+  while (k >= 0 && isIdentChar(line[k]!)) k--
+  return /^\.[A-Za-z_]/.test(line.slice(k + 1, j + 1))
+}
 
 function wordToken(text: string, col: number): Token {
   if (text[0] === '$') {
@@ -157,10 +177,13 @@ export function tokenize(line: string): Token[] {
       continue
     }
     if (c === '+') {
-      // "+5" right after a word is "label + 5"; a lone "+" is the plus operator.
-      out.push({ kind: 'plus', text: c, col })
-      i++
-      continue
+      // A signed number (+5, +1.5) at an operand start; otherwise the plus operator.
+      const signed = atOperandStart(line, i) && /[0-9.]/.test(line[i + 1] ?? '')
+      if (!signed) {
+        out.push({ kind: 'plus', text: c, col })
+        i++
+        continue
+      }
     }
     if (c === '"') {
       let j = i + 1
@@ -196,7 +219,7 @@ export function tokenize(line: string): Token[] {
     }
     // A word: identifier, register, directive, or number (numbers may carry a sign and an exponent).
     let j = i
-    if (c === '-' ) j++
+    if (c === '-' || c === '+') j++
     while (j < n) {
       const d = line[j]!
       if (isIdentChar(d)) {

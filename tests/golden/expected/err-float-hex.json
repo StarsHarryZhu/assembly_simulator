@@ -1,0 +1,13 @@
+{
+ "name": "err-float-hex",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 3,
+    "col": 8,
+    "message": "\"0x10\" is not a valid floating point constant"
+   }
+  ]
+ }
+}

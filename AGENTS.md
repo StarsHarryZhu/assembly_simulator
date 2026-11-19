@@ -59,7 +59,7 @@ Done:
 
 - MIPS engine at MARS 4.5 parity: assembler (directives, macros, `.eqv`, `.include`), every basic and
   pseudo form, CPU with exceptions and kernel handlers, all syscalls, undo of up to 2000 steps.
-  Verified against MARS on 29 golden programs (including all 7 examples); about 5 million
+  Verified against MARS on 38 golden fixtures (31 programs and all 7 examples); about 5 million
   instructions per second.
 - Edit & run tab, instruction set tab, disassembler, Chinese/English switch, light/dark themes,
   layouts from 320 px phones to wide desktops.

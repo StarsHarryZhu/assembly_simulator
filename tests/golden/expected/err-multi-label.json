@@ -1,0 +1,13 @@
+{
+ "name": "err-multi-label",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 3,
+    "col": 4,
+    "message": "\"b\": Too many or incorrectly formatted operands. Expected: b label"
+   }
+  ]
+ }
+}

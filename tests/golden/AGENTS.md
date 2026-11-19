@@ -19,4 +19,4 @@ each IDE example: assembler errors, machine code, data, console output and final
 
 ## 4. Progress
 
-Done: 22 test programs and 7 examples, all matching. Not done: nothing outstanding.
+Done: 31 test programs and 7 examples, all matching. Not done: nothing outstanding.
