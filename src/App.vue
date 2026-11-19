@@ -3,6 +3,7 @@ import { LOCALES, T, type Text } from './core/i18n'
 import { lang, t, tx } from './ui/i18n'
 import { ref, watch } from 'vue'
 import { isas, defaultIsa } from './isa'
+import { APP_VERSION } from './version'
 import { load, save } from './ui/storage'
 import IdeView from './ui/ide/IdeView.vue'
 import EncoderTab from './ui/calc/EncoderTab.vue'
@@ -95,6 +96,7 @@ function instructionRequestUsed(n: number) {
       <button class="btn theme" :title="t('主题：', 'Theme: ') + tx(THEME_LABEL[theme])" @click="cycleTheme">
         {{ tx(THEME_LABEL[theme]) }}
       </button>
+      <span class="version" :title="t('当前版本', 'Current version')">v{{ APP_VERSION }}</span>
     </header>
     <main class="body">
       <IdeView v-show="tab === 'ide'" :isa="isa" @open-in-decoder="openInDecoder" @open-instruction="openInInstructionSet" />
@@ -129,6 +131,13 @@ function instructionRequestUsed(n: number) {
 .title {
   font-weight: 600;
   font-size: 15px;
+}
+.version {
+  color: var(--text-muted);
+  font: 11px/1 var(--font-mono);
+  letter-spacing: 0.02em;
+  user-select: text;
+  white-space: nowrap;
 }
 .arch select,
 .lang {
