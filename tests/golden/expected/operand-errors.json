@@ -1,0 +1,448 @@
+{
+ "name": "operand-errors",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 7,
+    "col": 15,
+    "message": "\"32768\": operand is out of range"
+   },
+   {
+    "line": 8,
+    "col": 16,
+    "message": "\"32768\": operand is out of range"
+   },
+   {
+    "line": 9,
+    "col": 11,
+    "message": "\"32768\": operand is out of range"
+   },
+   {
+    "line": 10,
+    "col": 11,
+    "message": "\"32768\": operand is out of range"
+   },
+   {
+    "line": 11,
+    "col": 15,
+    "message": "\"40000\": operand is out of range"
+   },
+   {
+    "line": 12,
+    "col": 16,
+    "message": "\"40000\": operand is out of range"
+   },
+   {
+    "line": 13,
+    "col": 11,
+    "message": "\"40000\": operand is out of range"
+   },
+   {
+    "line": 14,
+    "col": 11,
+    "message": "\"40000\": operand is out of range"
+   },
+   {
+    "line": 15,
+    "col": 15,
+    "message": "\"65535\": operand is out of range"
+   },
+   {
+    "line": 16,
+    "col": 16,
+    "message": "\"65535\": operand is out of range"
+   },
+   {
+    "line": 17,
+    "col": 11,
+    "message": "\"65535\": operand is out of range"
+   },
+   {
+    "line": 18,
+    "col": 11,
+    "message": "\"65535\": operand is out of range"
+   },
+   {
+    "line": 19,
+    "col": 15,
+    "message": "\"65536\": operand is out of range"
+   },
+   {
+    "line": 20,
+    "col": 16,
+    "message": "\"65536\": operand is out of range"
+   },
+   {
+    "line": 21,
+    "col": 14,
+    "message": "\"65536\": operand is of incorrect type"
+   },
+   {
+    "line": 22,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 23,
+    "col": 11,
+    "message": "\"65536\": operand is out of range"
+   },
+   {
+    "line": 24,
+    "col": 11,
+    "message": "\"65536\": operand is out of range"
+   },
+   {
+    "line": 25,
+    "col": 15,
+    "message": "\"100000\": operand is out of range"
+   },
+   {
+    "line": 26,
+    "col": 16,
+    "message": "\"100000\": operand is out of range"
+   },
+   {
+    "line": 27,
+    "col": 14,
+    "message": "\"100000\": operand is of incorrect type"
+   },
+   {
+    "line": 28,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 29,
+    "col": 11,
+    "message": "\"100000\": operand is out of range"
+   },
+   {
+    "line": 30,
+    "col": 11,
+    "message": "\"100000\": operand is out of range"
+   },
+   {
+    "line": 31,
+    "col": 14,
+    "message": "\"-1\": operand is of incorrect type"
+   },
+   {
+    "line": 32,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 33,
+    "col": 14,
+    "message": "\"-100\": operand is of incorrect type"
+   },
+   {
+    "line": 34,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 35,
+    "col": 14,
+    "message": "\"-32768\": operand is of incorrect type"
+   },
+   {
+    "line": 36,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 37,
+    "col": 15,
+    "message": "\"-32769\": operand is out of range"
+   },
+   {
+    "line": 38,
+    "col": 16,
+    "message": "\"-32769\": operand is out of range"
+   },
+   {
+    "line": 39,
+    "col": 14,
+    "message": "\"-32769\": operand is of incorrect type"
+   },
+   {
+    "line": 40,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 41,
+    "col": 11,
+    "message": "\"-32769\": operand is out of range"
+   },
+   {
+    "line": 42,
+    "col": 11,
+    "message": "\"-32769\": operand is out of range"
+   },
+   {
+    "line": 43,
+    "col": 15,
+    "message": "\"0x7fffffff\": operand is out of range"
+   },
+   {
+    "line": 44,
+    "col": 16,
+    "message": "\"0x7fffffff\": operand is out of range"
+   },
+   {
+    "line": 45,
+    "col": 14,
+    "message": "\"0x7fffffff\": operand is of incorrect type"
+   },
+   {
+    "line": 46,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 47,
+    "col": 11,
+    "message": "\"0x7fffffff\": operand is out of range"
+   },
+   {
+    "line": 48,
+    "col": 11,
+    "message": "\"0x7fffffff\": operand is out of range"
+   },
+   {
+    "line": 49,
+    "col": 15,
+    "message": "\"0x80000000\": operand is out of range"
+   },
+   {
+    "line": 50,
+    "col": 16,
+    "message": "\"0x80000000\": operand is out of range"
+   },
+   {
+    "line": 51,
+    "col": 14,
+    "message": "\"0x80000000\": operand is of incorrect type"
+   },
+   {
+    "line": 52,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 53,
+    "col": 11,
+    "message": "\"0x80000000\": operand is out of range"
+   },
+   {
+    "line": 54,
+    "col": 11,
+    "message": "\"0x80000000\": operand is out of range"
+   },
+   {
+    "line": 55,
+    "col": 14,
+    "message": "\"0xffffffff\": operand is of incorrect type"
+   },
+   {
+    "line": 56,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 57,
+    "col": 15,
+    "message": "\"0xffff\": operand is out of range"
+   },
+   {
+    "line": 58,
+    "col": 16,
+    "message": "\"0xffff\": operand is out of range"
+   },
+   {
+    "line": 59,
+    "col": 11,
+    "message": "\"0xffff\": operand is out of range"
+   },
+   {
+    "line": 60,
+    "col": 11,
+    "message": "\"0xffff\": operand is out of range"
+   },
+   {
+    "line": 61,
+    "col": 15,
+    "message": "\"0x8000\": operand is out of range"
+   },
+   {
+    "line": 62,
+    "col": 16,
+    "message": "\"0x8000\": operand is out of range"
+   },
+   {
+    "line": 63,
+    "col": 11,
+    "message": "\"0x8000\": operand is out of range"
+   },
+   {
+    "line": 64,
+    "col": 11,
+    "message": "\"0x8000\": operand is out of range"
+   },
+   {
+    "line": 65,
+    "col": 15,
+    "message": "\"0x10000\": operand is out of range"
+   },
+   {
+    "line": 66,
+    "col": 16,
+    "message": "\"0x10000\": operand is out of range"
+   },
+   {
+    "line": 67,
+    "col": 14,
+    "message": "\"0x10000\": operand is of incorrect type"
+   },
+   {
+    "line": 68,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 69,
+    "col": 11,
+    "message": "\"0x10000\": operand is out of range"
+   },
+   {
+    "line": 70,
+    "col": 11,
+    "message": "\"0x10000\": operand is out of range"
+   },
+   {
+    "line": 71,
+    "col": 15,
+    "message": "\"0x12345678\": operand is out of range"
+   },
+   {
+    "line": 72,
+    "col": 16,
+    "message": "\"0x12345678\": operand is out of range"
+   },
+   {
+    "line": 73,
+    "col": 14,
+    "message": "\"0x12345678\": operand is of incorrect type"
+   },
+   {
+    "line": 74,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 75,
+    "col": 11,
+    "message": "\"0x12345678\": operand is out of range"
+   },
+   {
+    "line": 76,
+    "col": 11,
+    "message": "\"0x12345678\": operand is out of range"
+   },
+   {
+    "line": 77,
+    "col": 14,
+    "message": "\"-0x8000\": operand is of incorrect type"
+   },
+   {
+    "line": 78,
+    "col": 2,
+    "message": "\"or\": Too few or incorrectly formatted operands. Expected: or $t1,$t2,$t3"
+   },
+   {
+    "line": 79,
+    "col": 14,
+    "message": "\"8\": operand is of incorrect type"
+   },
+   {
+    "line": 80,
+    "col": 4,
+    "message": "\"0x00400000\": operand is of incorrect type"
+   },
+   {
+    "line": 81,
+    "col": 2,
+    "message": "\"lw\": Too few or incorrectly formatted operands. Expected: lw $t1,-100($t2)"
+   },
+   {
+    "line": 82,
+    "col": 2,
+    "message": "\"add\": Too few or incorrectly formatted operands. Expected: add $t1,$t2,$t3"
+   },
+   {
+    "line": 83,
+    "col": 14,
+    "message": "\"32\": operand is out of range"
+   },
+   {
+    "line": 84,
+    "col": 14,
+    "message": "\"-1\": operand is out of range"
+   },
+   {
+    "line": 85,
+    "col": 2,
+    "message": "\"foo\" is not a recognized operator"
+   },
+   {
+    "line": 86,
+    "col": 2,
+    "message": "\"add\": Too many or incorrectly formatted operands. Expected: add $t1,$t2,$t3"
+   },
+   {
+    "line": 87,
+    "col": 2,
+    "message": "\"lw\": Too few or incorrectly formatted operands. Expected: lw $t1,-100($t2)"
+   },
+   {
+    "line": 88,
+    "col": 2,
+    "message": "\"li\": Too few or incorrectly formatted operands. Expected: li $t1,-100"
+   },
+   {
+    "line": 89,
+    "col": 7,
+    "message": "\"$f1\": operand is of incorrect type"
+   },
+   {
+    "line": 90,
+    "col": 7,
+    "message": "\"$f1\": operand is of incorrect type"
+   },
+   {
+    "line": 93,
+    "col": 8,
+    "message": "\"-1\": operand is out of range"
+   },
+   {
+    "line": 94,
+    "col": 8,
+    "message": "\"0x100000\": operand is out of range"
+   },
+   {
+    "line": 95,
+    "col": 10,
+    "message": "\"-1\": operand is out of range"
+   },
+   {
+    "line": 96,
+    "col": 10,
+    "message": "\"65536\": operand is out of range"
+   }
+  ]
+ }
+}
