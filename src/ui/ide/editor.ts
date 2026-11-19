@@ -34,6 +34,7 @@ import {
   highlightActiveLine,
   highlightActiveLineGutter,
   highlightSpecialChars,
+  hoverTooltip,
   keymap,
   lineNumbers,
   ViewPlugin,
@@ -223,6 +224,163 @@ export function flushSectionsOnInput(sections: string[]) {
     })
     return changes.length ? [tr, { changes, sequential: true }] : tr
   })
+}
+
+/* ---------------------------------------------------------------- modifier-click navigation */
+
+export type NavigationTarget =
+  | { kind: 'instruction'; line: string; from: number; to: number }
+  | { kind: 'definition'; what: 'label' | 'macro'; name: string; line: number; col: number; from: number; to: number }
+
+interface Piece {
+  text: string
+  from: number
+  to: number
+  role: 'label' | 'head' | 'ref'
+}
+
+interface Location {
+  line: number
+  col: number
+}
+
+/** Words on one statement line with their role, skipping comments, strings and character literals. */
+function linePieces(text: string, comment: string): Piece[] {
+  const out: Piece[] = []
+  let head = false
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]!
+    if (c === ' ' || c === '\t') {
+      i++
+      continue
+    }
+    if (comment && text.startsWith(comment, i)) break
+    if (c === '"' || c === "'") {
+      i++
+      while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1
+      i++
+      continue
+    }
+    TOKEN.lastIndex = i
+    const tok = TOKEN.exec(text)![0]
+    const end = i + tok.length
+    if (/^[A-Za-z_.$][\w.$]*$/.test(tok)) {
+      if (!head) {
+        let j = end
+        while (text[j] === ' ' || text[j] === '\t') j++
+        if (text[j] === ':') {
+          out.push({ text: tok, from: i, to: end, role: 'label' })
+          i = j + 1
+          continue
+        }
+        head = true
+        out.push({ text: tok, from: i, to: end, role: 'head' })
+      } else out.push({ text: tok, from: i, to: end, role: 'ref' })
+    }
+    i = end
+  }
+  return out
+}
+
+/** Labels and macros defined in the document, with the line and column of the name. */
+function sourceIndex(state: EditorState, comment: string) {
+  const labels = new Map<string, Location>()
+  const macros = new Map<string, Location>()
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const pieces = linePieces(state.doc.line(n).text, comment)
+    for (const p of pieces) if (p.role === 'label' && !labels.has(p.text)) labels.set(p.text, { line: n, col: p.from })
+    const head = pieces[0]
+    if (head?.role === 'head' && head.text.toLowerCase() === '.macro' && pieces[1] && !macros.has(pieces[1].text)) {
+      macros.set(pieces[1].text, { line: n, col: pieces[1].from })
+    }
+  }
+  return { labels, macros }
+}
+
+/** What a modifier-click on `pos` opens, if anything. */
+export function navigationTarget(state: EditorState, pos: number, isa: IsaPlugin): NavigationTarget | null {
+  if (pos < 0 || pos > state.doc.length) return null
+  const line = state.doc.lineAt(pos)
+  const off = pos - line.from
+  const pieces = linePieces(line.text, isa.language.commentChar)
+  const hit = pieces.find((p) => off >= p.from && off < p.to) ?? pieces.find((p) => off === p.to)
+  if (!hit || hit.role === 'label') return null
+  const at = { from: line.from + hit.from, to: line.from + hit.to }
+  const index = sourceIndex(state, isa.language.commentChar)
+  if (hit.role === 'head') {
+    const macro = index.macros.get(hit.text)
+    if (macro) return { kind: 'definition', what: 'macro', name: hit.text, ...macro, ...at }
+    if (isa.language.mnemonics.some((m) => m.toLowerCase() === hit.text.toLowerCase())) {
+      return { kind: 'instruction', line: line.text.slice(hit.from).trimEnd(), ...at }
+    }
+    return null
+  }
+  const label = index.labels.get(hit.text)
+  return label ? { kind: 'definition', what: 'label', name: hit.text, ...label, ...at } : null
+}
+
+/** "⌘" on a Mac, "Ctrl" everywhere else; used by the click handler and the hover hint. */
+export function modifierName(): string {
+  if (typeof navigator === 'undefined') return 'Ctrl'
+  return /Mac|iPhone|iPad|iPod/.test(`${navigator.platform ?? ''} ${navigator.userAgent}`) ? '⌘' : 'Ctrl'
+}
+
+function hintText(target: NavigationTarget): string {
+  const mod = modifierName()
+  const en = getLocale() === 'en'
+  if (target.kind === 'instruction') return en ? `${mod}-click: open in the instruction set` : `${mod} 点击：在指令集中打开`
+  if (target.what === 'macro') return en ? `${mod}-click: go to the macro definition` : `${mod} 点击：跳到宏定义`
+  return en ? `${mod}-click: go to the label definition` : `${mod} 点击：跳到标签定义`
+}
+
+function navHint(isa: IsaPlugin): Extension {
+  return hoverTooltip(
+    (view, pos) => {
+      const target = navigationTarget(view.state, pos, isa)
+      if (!target) return null
+      return {
+        pos: target.from,
+        end: target.to,
+        above: true,
+        create: () => {
+          const dom = document.createElement('div')
+          dom.className = 'cm-nav-tip'
+          dom.textContent = hintText(target)
+          return { dom }
+        },
+      }
+    },
+    { hoverTime: 350 },
+  )
+}
+
+export interface NavigationHandlers {
+  /** A mnemonic was modifier-clicked: open its statement (labels and indentation stripped) in the calculator. */
+  onInstruction(line: string): void
+  /** A label reference or macro call was modifier-clicked: jump to its definition (1-based line, 0-based column). */
+  onDefinition(line: number, col: number): void
+}
+
+/** Modifier-click navigation and its hover hint. */
+export function editorNavigation(isa: IsaPlugin, handlers: NavigationHandlers): Extension[] {
+  return [
+    EditorView.domEventHandlers({
+      mousedown(event, view) {
+        if (event.button !== 0 || event.altKey || event.shiftKey) return false
+        if (modifierName() === '⌘' ? !event.metaKey : !event.ctrlKey) return false
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+        if (pos == null) return false
+        const target = navigationTarget(view.state, pos, isa)
+        if (!target) return false
+        event.preventDefault()
+        if (target.kind === 'instruction') handlers.onInstruction(target.line)
+        else handlers.onDefinition(target.line, target.col)
+        return true
+      },
+    }),
+    navHint(isa),
+  ]
 }
 
 /* ---------------------------------------------------------------- completion */
@@ -419,6 +577,7 @@ const theme = EditorView.theme({
   '.cm-label-ref': { color: 'var(--series-6)' },
   '.cm-section-line': { backgroundColor: 'var(--bg-section)' },
   '.cm-tooltip': { backgroundColor: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text-primary)' },
+  '.cm-nav-tip': { padding: '3px 8px', fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' },
   // Suggestion list in the style of VS Code's suggest widget.
   '.cm-tooltip.cm-tooltip-autocomplete': {
     backgroundColor: 'var(--suggest-bg)',

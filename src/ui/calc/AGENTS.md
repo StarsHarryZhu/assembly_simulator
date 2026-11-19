@@ -13,10 +13,13 @@ words back into assembly with fields and notes.
 - Encoding, decoding and running go through the plugin (`analyzeLine`, `buildLine`, `decode`,
   `createMachine`); nothing here knows MIPS encodings.
 - Bit fields are drawn as components sized by bit count, never as text diagrams.
+- The instruction set tab can be opened from the editor with a `{ line, n }` request; the request replaces
+  the one-line input and clears the per-label addresses, it never runs anything.
 
 ## 3. Contents
 
-- `EncoderTab.vue` — instruction picker, one-line input, operand editors, machine code per word.
+- `EncoderTab.vue` — instruction picker, one-line input (also fed by the editor's modifier-click),
+  operand editors, machine code per word.
 - `DemoRunner.vue` — runs the analysed line step by step and shows registers and memory before and after.
 - `DecoderTab.vue` — machine words (one per line, optional `@ address`) to assembly.
 - `BitFields.vue` — one word as a row of fields with bits, value and meaning.

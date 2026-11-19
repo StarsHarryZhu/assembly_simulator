@@ -21,16 +21,21 @@ data declaration plus heap blocks and other written ranges.
 - There is no assemble button: run controls go through `handle.control`, which assembles first (with
   the spinner) when the code changed. Slow actions show the shared `.spinner` from `theme.css`.
 - The editor's tab width and indent unit are 4 spaces.
+- Modifier-click (⌘ on macOS, Ctrl elsewhere) is handled in `editor.ts`, not by the browser's follow-link
+  behaviour: a mnemonic opens its statement in the instruction set tab, a label reference or macro call
+  jumps to its definition. Included files have no editor, so their labels cannot be jumped to.
 - Never use the browser's `confirm()`/`alert()`: embedded browsers may drop them. Ask with
   `ConfirmDialog.vue`.
 
 ## 3. Contents
 
-- `IdeView.vue` — layout, shortcuts, file drop, New/Open/examples with the unsaved-changes prompt.
+- `IdeView.vue` — layout, shortcuts, file drop, New/Open/examples with the unsaved-changes prompt;
+  forwards the editor's `open-instruction` event to the app.
 - `useSession.ts` — creates the session, version counter, busy state, saved code and settings, sound.
 - `editor.ts` — CodeMirror language, label and section marks, VS Code-style suggestions, auto-closed
-  quotes and brackets, breakpoints.
-- `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line).
+  quotes and brackets, breakpoints, modifier-click navigation and its hover hint.
+- `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line);
+  emits `open-instruction` for a modifier-clicked mnemonic.
 - `Toolbar.vue` — new, open, download, examples, run controls, interval, step size (line by default), status.
 - `TerminalPane.vue` — program output with input prompt, messages, files.
 - `FilesPanel.vue` — files the program can open, with upload and download.
@@ -45,5 +50,6 @@ data declaration plus heap blocks and other written ranges.
 
 ## 4. Progress
 
-Done: everything listed above, checked in the browser in both languages and themes.
+Done: everything listed above, checked in the browser in both languages and themes, including
+⌘/Ctrl-click navigation to the instruction set tab and to label and macro definitions.
 Not done: nothing outstanding.

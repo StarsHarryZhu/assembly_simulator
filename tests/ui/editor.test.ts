@@ -4,7 +4,7 @@ import { EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import { mips } from '../../src/isa/mips'
 import { getIndentUnit } from '@codemirror/language'
-import { completer, editorExtensions, flushSectionsOnInput, labelsField, scanLine } from '../../src/ui/ide/editor'
+import { completer, editorExtensions, flushSectionsOnInput, labelsField, navigationTarget, scanLine } from '../../src/ui/ide/editor'
 
 const sections = new Set(mips.language.sections)
 
@@ -90,5 +90,46 @@ describe('suggestions', () => {
   it('offers registers after $ and nothing inside comments', () => {
     expect(at('        add $t')!.options.some((o) => o.label === '$t0')).toBe(true)
     expect(at('        # ad')).toBeNull()
+  })
+})
+
+describe('modifier-click navigation', () => {
+  const nav = (doc: string, needle: string, last = false) => {
+    const state = EditorState.create({ doc, extensions: editorExtensions(mips) })
+    return navigationTarget(state, (last ? doc.lastIndexOf(needle) : doc.indexOf(needle)) + 1, mips)
+  }
+
+  const source = ['.text', 'loop: beq $t0, $zero, done', '    add $t1, $t1, $t2', 'done: jr $ra', ''].join('\n')
+
+  it('opens the whole statement of a clicked mnemonic, without its label or indentation', () => {
+    expect(nav(source, 'beq')).toMatchObject({ kind: 'instruction', line: 'beq $t0, $zero, done' })
+    expect(nav(source, 'add ')).toMatchObject({ kind: 'instruction', line: 'add $t1, $t1, $t2' })
+    expect(nav('.text\n  add $t0,$t1,$t2  # note\n', 'add')).toMatchObject({ line: 'add $t0,$t1,$t2  # note' })
+  })
+
+  it('jumps from a label operand to its definition, and ignores definitions and registers', () => {
+    expect(nav(source, 'done')).toMatchObject({ kind: 'definition', what: 'label', line: 4, col: 0 })
+    expect(nav('.data\nmsg: .asciiz "x"\n.word msg\n', 'msg', true)).toMatchObject({ kind: 'definition', what: 'label', line: 2 })
+    expect(nav(source, 'loop')).toBeNull()
+    expect(nav(source, '$t0')).toBeNull()
+    expect(nav(source, 'jr')).toMatchObject({ kind: 'instruction', line: 'jr $ra' })
+  })
+
+  it('does not treat text inside comments or strings as labels', () => {
+    const doc = '.data\nmsg: .asciiz "loop: add"\n    add $t0, $t1, $t2 # add loop\n'
+    expect(nav(doc, 'loop')).toBeNull()
+    expect(nav(doc, 'add', true)).toBeNull()
+  })
+
+  it('jumps from a macro call to the .macro line', () => {
+    const doc = '.macro twice\n    add $t0, $t0, $t0\n.end_macro\n.text\n    twice $t1\n'
+    expect(nav(doc, 'twice', true)).toMatchObject({ kind: 'definition', what: 'macro', line: 1, col: 7 })
+    expect(nav(doc, 'twice')).toBeNull()
+  })
+
+  it('has no target for an unknown mnemonic, a directive or a lone label', () => {
+    expect(nav('    thrice\n', 'thrice')).toBeNull()
+    expect(nav('.data\n.word 1\n', '.word')).toBeNull()
+    expect(nav('start:\n', 'start')).toBeNull()
   })
 })

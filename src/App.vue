@@ -49,6 +49,18 @@ function openInDecoder(word: string) {
   decodeRequest.value = word
   tab.value = 'dec'
 }
+
+/** Lets a modifier-click in the editor open that statement in the instruction set tab. */
+const instructionRequest = ref<{ line: string; n: number } | null>(null)
+let instructionSerial = 0
+function openInInstructionSet(line: string) {
+  instructionRequest.value = { line, n: ++instructionSerial }
+  tab.value = 'enc'
+}
+/** One request is used once: the tab is re-created on every visit and must keep later edits. */
+function instructionRequestUsed(n: number) {
+  if (instructionRequest.value?.n === n) instructionRequest.value = null
+}
 </script>
 
 <template>
@@ -85,8 +97,8 @@ function openInDecoder(word: string) {
       </button>
     </header>
     <main class="body">
-      <IdeView v-show="tab === 'ide'" :isa="isa" @open-in-decoder="openInDecoder" />
-      <EncoderTab v-if="tab === 'enc'" :isa="isa" />
+      <IdeView v-show="tab === 'ide'" :isa="isa" @open-in-decoder="openInDecoder" @open-instruction="openInInstructionSet" />
+      <EncoderTab v-if="tab === 'enc'" :isa="isa" :request="instructionRequest" @consumed="instructionRequestUsed" />
       <DecoderTab v-if="tab === 'dec'" :isa="isa" :request="decodeRequest" />
     </main>
   </div>

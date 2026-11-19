@@ -62,7 +62,8 @@ Done:
   Verified against MARS on 38 golden fixtures (31 programs and all 7 examples); about 5 million
   instructions per second.
 - Edit & run tab, instruction set tab, disassembler, Chinese/English switch, light/dark themes,
-  layouts from 320 px phones to wide desktops.
+  layouts from 320 px phones to wide desktops. ⌘/Ctrl-click opens an instruction in the instruction
+  set tab and jumps label and macro references to their definition, with a hover hint.
 
 Not done / known gaps:
 

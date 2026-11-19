@@ -7,9 +7,10 @@ import { EditorState } from '@codemirror/state'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { AssembleResult } from '../../core/isa'
 import type { SessionHandle } from './useSession'
-import { breakpointLines, breakpointsChanged, editorExtensions, setBreakpointLines, setMark, type Mark } from './editor'
+import { breakpointLines, breakpointsChanged, editorExtensions, editorNavigation, setBreakpointLines, setMark, type Mark } from './editor'
 
 const props = defineProps<{ handle: SessionHandle }>()
+const emit = defineEmits<{ 'open-instruction': [line: string] }>()
 const host = ref<HTMLDivElement | null>(null)
 let view: EditorView | null = null
 let lastResult: AssembleResult | null = null
@@ -75,6 +76,10 @@ onMounted(() => {
         EditorView.updateListener.of((u) => {
           if (u.docChanged) s.setSource(u.state.doc.toString())
           if (breakpointsChanged(u.startState, u.state)) s.setBreakpoints(breakpointLines(u.state))
+        }),
+        editorNavigation(s.isa, {
+          onInstruction: (line) => emit('open-instruction', line),
+          onDefinition: (line, col) => goto(line, col + 1),
         }),
         EditorView.contentAttributes.of({ 'aria-label': t('汇编代码', 'Assembly code') }),
       ]),

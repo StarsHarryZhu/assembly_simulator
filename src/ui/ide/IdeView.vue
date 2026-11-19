@@ -21,7 +21,7 @@ import Toolbar from './Toolbar.vue'
 import { useSession } from './useSession'
 
 const props = defineProps<{ isa: IsaPlugin }>()
-const emit = defineEmits<{ 'open-in-decoder': [word: string] }>()
+const emit = defineEmits<{ 'open-in-decoder': [word: string]; 'open-instruction': [line: string] }>()
 
 const handle = useSession(props.isa)
 const s = handle.session
@@ -198,7 +198,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           }}</span>
         </div>
         <div class="code card">
-          <EditorPane v-show="view === 'source'" ref="editor" :handle="handle" />
+          <EditorPane v-show="view === 'source'" ref="editor" :handle="handle" @open-instruction="(line) => emit('open-instruction', line)" />
           <TextSegmentView v-if="view === 'text'" :handle="handle" @decode="(w) => emit('open-in-decoder', w)" />
         </div>
         <TerminalPane class="terminal" :handle="handle" @goto="goto" />

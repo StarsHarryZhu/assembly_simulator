@@ -14,7 +14,8 @@ import BitFields from './BitFields.vue'
 import DemoRunner from './DemoRunner.vue'
 import { parseWord } from './values'
 
-const props = defineProps<{ isa: IsaPlugin }>()
+const props = defineProps<{ isa: IsaPlugin; request?: { line: string; n: number } | null }>()
+const emit = defineEmits<{ consumed: [n: number] }>()
 const isa = props.isa
 
 const group = ref<string>(load('calcGroup', 'all'))
@@ -25,6 +26,19 @@ const labelAddrs = reactive<Record<string, number>>({})
 watch(group, (g) => save('calcGroup', g))
 watch(line, (l) => save('calcLine', l))
 watch(atText, (a) => save('calcAt', a))
+
+// A line opened from the editor replaces the saved one; the label addresses start from scratch. The tab
+// is re-created whenever it is shown, so tell the app the request was used: a remount must keep later edits.
+watch(
+  () => props.request,
+  (r) => {
+    if (!r) return
+    line.value = r.line
+    for (const name of Object.keys(labelAddrs)) delete labelAddrs[name]
+    emit('consumed', r.n)
+  },
+  { immediate: true },
+)
 
 const at = computed(() => {
   const v = parseWord(atText.value)
