@@ -240,6 +240,9 @@ export interface Machine {
   readonly lastSleep: number
 }
 
+/** What a label names: an instruction (branch and jump targets) or a place in data memory. */
+export type LabelKind = 'code' | 'data'
+
 export interface CatalogEntry {
   /** Unique key, e.g. "addi" or "li#2". */
   key: string
@@ -319,6 +322,44 @@ export interface ExampleProgram {
   text: Text
 }
 
+/** A register a reference row reads or writes, and what it holds. */
+export interface RefRegister {
+  /** Register name as written in source, e.g. "$a0". */
+  reg: string
+  text: Text
+}
+
+/**
+ * One row of a reference table: a service number, a register, an exception code, an instruction.
+ * Rows either explain themselves in `text`, or list the registers they read and write.
+ */
+export interface RefRow {
+  key: string
+  title: Text
+  text?: Text
+  args?: RefRegister[]
+  results?: RefRegister[]
+  note?: Text
+  /** Source showing the row in use; may span several lines. */
+  example?: string
+}
+
+/**
+ * Reference for instructions that need more than one line: what each value of a register or operand
+ * means (MIPS `syscall` picks a service by `$v0`, `mfc0` names a coprocessor 0 register), how a
+ * family of instructions works together, or what each assembler directive does.
+ */
+export interface ReferenceTable {
+  id: string
+  /** Instructions (or directives) that show this table. */
+  mnemonics: string[]
+  title: Text
+  intro: Text
+  /** Header of the key column, e.g. "$v0". */
+  keyTitle: Text
+  groups: { title?: Text; rows: RefRow[] }[]
+}
+
 export interface IsaPlugin {
   id: string
   displayName: string
@@ -337,12 +378,21 @@ export interface IsaPlugin {
     directives: string[]
     /** Directives that open a segment (`.text`, `.data`, …): always written in the first column. */
     sections: string[]
+    /** The section directives whose labels name memory (`.data`, `.kdata`); every other section holds code. */
+    dataSections: string[]
+    /**
+     * For each mnemonic, the operand positions (0-based, counted by commas) that take a label, and which
+     * kind fits there: a branch or jump target ('code') or an address in memory ('data').
+     */
+    labelOperands: Record<string, Record<number, LabelKind>>
     commentChar: string
   }
   catalog: CatalogEntry[]
   /** Catalog groups in display order. */
   catalogGroups: { id: string; title: Text }[]
   examples: ExampleProgram[]
+  /** Longer references for instructions a one-line description cannot explain. */
+  references?: ReferenceTable[]
   assemble(source: SourceFile, options?: AssembleOptions): AssembleResult
   createMachine(program: Program, env: Environment): Machine
   /** Decode one instruction word at an address. */

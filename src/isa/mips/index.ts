@@ -1,13 +1,15 @@
 /** MIPS32 as an IsaPlugin: MARS 4.5 instruction set, assembler, simulator and decoder. */
 import { T, type Text } from '../../core/i18n'
-import type { CatalogEntry, Environment, ExampleProgram, IsaPlugin, Program, SourceFile } from '../../core/isa'
+import type { CatalogEntry, Environment, ExampleProgram, IsaPlugin, LabelKind, Program, SourceFile } from '../../core/isa'
 import { assemble, DATA_BASE, DIRECTIVES, MNEMONICS, TEXT_BASE } from './assembler'
 import { analyzeLine, buildLine } from './calc'
 import { createMachine, HEAP_BASE, INITIAL_SP } from './cpu'
 import { decodeView } from './decoder'
 import { FIELD_TITLES } from './formats'
 import { ALL_FORMS } from './forms'
+import { tokenize } from './lexer'
 import { FP, GPR_NAMES, PC, REGISTER_BANKS, REGISTER_COUNT, SP } from './registers'
+import { REFERENCES } from './references'
 
 const GROUP_TITLES: Record<string, Text> = {
   R: T('R 型', 'R-type'),
@@ -31,6 +33,24 @@ export const CATALOG: CatalogEntry[] = ALL_FORMS.map((f) => ({
 }))
 
 export { GROUP_TITLES }
+
+/**
+ * Where each mnemonic takes a label, read off its forms: an operand whose example holds a name (`label`,
+ * `target`, `label+100000($t2)`). Basic instructions take labels only as branch or jump targets; among
+ * pseudo-instructions the branches (b…) want code and the rest (la, lw, s.d, …) an address in data.
+ */
+export const LABEL_OPERANDS: Record<string, Record<number, LabelKind>> = {}
+for (const f of ALL_FORMS) {
+  f.example
+    .slice(f.name.length)
+    .split(',')
+    .forEach((operand, at) => {
+      if (!tokenize(operand).some((t) => t.kind === 'ident')) return
+      const wants: LabelKind = f.basic || /^[bj]/.test(f.name) ? 'code' : 'data'
+      const slots = (LABEL_OPERANDS[f.name] ??= {})
+      slots[at] ??= wants
+    })
+}
 
 /**
  * Example programs, in menu order. examples/<id>.asm has Chinese comments, examples/en/<id>.asm the same
@@ -87,11 +107,14 @@ export const mips: IsaPlugin = {
     registers: [...GPR_NAMES.map((n) => '$' + n), ...Array.from({ length: 32 }, (_, i) => '$' + i), ...Array.from({ length: 32 }, (_, i) => '$f' + i)],
     directives: DIRECTIVES,
     sections: ['.text', '.data', '.ktext', '.kdata'],
+    dataSections: ['.data', '.kdata'],
+    labelOperands: LABEL_OPERANDS,
     commentChar: '#',
   },
   catalog: CATALOG,
   catalogGroups: Object.entries(GROUP_TITLES).map(([id, title]) => ({ id, title })),
   examples: EXAMPLES,
+  references: REFERENCES,
   assemble: (source: SourceFile, options) => assemble(source, options),
   createMachine: (program: Program, env: Environment) => createMachine(program, env),
   decode: (word: number, addr: number) => decodeView(word, addr),

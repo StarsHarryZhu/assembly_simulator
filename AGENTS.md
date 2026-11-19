@@ -13,7 +13,10 @@ coprocessor 0 and 1, all 39 syscalls) and has three tabs:
   ways to execute: single step (by source line by default, or by basic instruction, with undo), run,
   and auto-step at an interval. There is no assemble button: every run control reassembles changed code.
 - **Instruction set** — pick or type one line, see its machine code as bit fields (pseudo
-  instructions show their whole expansion) and step it on the real machine.
+  instructions show their whole expansion) and step it on the real machine. Instructions that need
+  more than one line get full reference tables: every `syscall` service by `$v0`, the coprocessor 0
+  registers and exception codes, and the floating-point condition flags; every assembler directive is
+  explained there too, and in the editor's suggestions.
 - **Disassembler** — machine words to assembly, fields and notes.
 
 The UI is available in Chinese and English (the system language at first, English otherwise), and the

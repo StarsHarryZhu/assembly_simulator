@@ -15,11 +15,18 @@ words back into assembly with fields and notes.
 - Bit fields are drawn as components sized by bit count, never as text diagrams.
 - The instruction set tab can be opened from the editor with a `{ line, n }` request; the request replaces
   the one-line input and clears the per-label addresses, it never runs anything.
+- Reference tables come from the plugin's `references`; every table listing the analysed mnemonic is
+  shown right after the title card, and the search box also matches the titles of their rows.
+- Directives are listed in the picker (their own group, and under All). A line that starts with a
+  directive shows a title card and the directive table with its row highlighted, never the
+  "only one instruction" error.
 
 ## 3. Contents
 
 - `EncoderTab.vue` — instruction picker, one-line input (also fed by the editor's modifier-click),
-  operand editors, machine code per word.
+  operand editors, reference tables, machine code per word.
+- `ReferenceTable.vue` — one reference table (registers read in green, written in red); folds into
+  cards below about 620 px.
 - `DemoRunner.vue` — runs the analysed line step by step and shows registers and memory before and after.
 - `DecoderTab.vue` — machine words (one per line, optional `@ address`) to assembly.
 - `BitFields.vue` — one word as a row of fields with bits, value and meaning.

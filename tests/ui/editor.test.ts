@@ -41,10 +41,24 @@ describe('sourceIndex', () => {
   it('keeps the first label of a line, as the assembler does, and macros', () => {
     const i = index('a: b: nop\n.macro twice(%r)\n    add %r, %r, %r\n.end_macro\n.L1:\n')
     expect([...i.labels]).toEqual([
-      ['a', { line: 1, col: 0 }],
-      ['.L1', { line: 5, col: 0 }],
+      ['a', { line: 1, col: 0, kind: 'code', decl: 'nop' }],
+      ['.L1', { line: 5, col: 0, kind: 'code', decl: '' }],
     ])
     expect([...i.macros]).toEqual([['twice', { line: 2, col: 7 }]])
+  })
+
+  it('tells data labels from code labels and keeps the statement each one names', () => {
+    const i = index(
+      ['top: nop', '.data', 'msg:    .asciiz "a # b"   # greeting', 'nums:', '        .word 1, 2, 3', '.text', 'main:   li $v0, 10', 'loop:', '    j loop', ''].join('\n'),
+    )
+    const kinds = Object.fromEntries([...i.labels].map(([name, d]) => [name, `${d.kind} ${d.decl}`]))
+    expect(kinds).toEqual({
+      top: 'code nop',
+      msg: 'data .asciiz "a # b"',
+      nums: 'data .word 1, 2, 3',
+      main: 'code li $v0, 10',
+      loop: 'code j loop',
+    })
   })
 
   it('is built once per document change, not per lookup', () => {
@@ -123,6 +137,47 @@ describe('suggestions', () => {
     expect(at('.L1: nop\n    j .L')!.options.map((o) => o.label)).toEqual(['.L1'])
   })
 
+  it('offers directives with their title', () => {
+    const options = at('.data\n.as')!.options
+    expect(options.find((o) => o.label === '.asciiz')!.detail).toBeTruthy()
+    expect(options.every((o) => o.detail && o.info)).toBe(true)
+  })
+
+  const source = ['.data', 'msg: .asciiz "hi"', 'nums: .word 1, 2', '.text', 'main:', 'loop: j loop', ''].join('\n')
+  const typed = (line: string) => at(source + line)
+
+  it('opens the labels as soon as an operand that takes one starts, the wanted kind first', () => {
+    const data = typed('    la $a0, ')!
+    expect(data.options.map((o) => [o.label, o.type, o.boost])).toEqual([
+      ['msg', 'data', 10],
+      ['nums', 'data', 10],
+      ['main', 'label', 0],
+      ['loop', 'label', 0],
+    ])
+    expect(data.options[0]!.detail).toBe('.asciiz "hi"')
+    expect(typed('    beq $t0, $t1,')!.options.filter((o) => o.boost).map((o) => o.label)).toEqual(['main', 'loop'])
+    expect(typed('    j ')!.options.find((o) => o.label === 'loop')!.boost).toBe(10)
+    expect(typed('    lw $t0, ')!.options.find((o) => o.label === 'nums')!.boost).toBe(10)
+  })
+
+  it('stays closed where no label fits until something is typed', () => {
+    expect(typed('    la ')).toBeNull()
+    expect(typed('    add $t0, ')).toBeNull()
+    expect(typed('    lw $t0, 4(')).toBeNull()
+    expect(typed('    la $a0, msg+')).toBeNull()
+    expect(typed('    add $t0, $t1, m')!.options.map((o) => o.label)).toContain('msg')
+  })
+
+  it('knows from the instruction forms which operands take labels', () => {
+    const slots = mips.language.labelOperands
+    expect(slots['la']).toEqual({ 1: 'data' })
+    expect(slots['lw']).toEqual({ 1: 'data' })
+    expect(slots['j']).toEqual({ 0: 'code' })
+    expect(slots['beq']).toEqual({ 2: 'code' })
+    expect(slots['bnez']).toEqual({ 1: 'code' })
+    expect(slots['add']).toBeUndefined()
+  })
+
   it('offers registers after $ and nothing inside comments', () => {
     expect(at('        add $t')!.options.some((o) => o.label === '$t0')).toBe(true)
     expect(at('        # ad')).toBeNull()
@@ -163,9 +218,9 @@ describe('modifier-click navigation', () => {
     expect(nav(doc, 'twice')).toBeNull()
   })
 
-  it('has no target for an unknown mnemonic, a directive or a lone label', () => {
+  it('opens a directive like a mnemonic, and has no target for an unknown word or a lone label', () => {
+    expect(nav('.data\nbuf: .word 1  # one\n', '.word')).toMatchObject({ kind: 'instruction', line: '.word 1  # one' })
     expect(nav('    thrice\n', 'thrice')).toBeNull()
-    expect(nav('.data\n.word 1\n', '.word')).toBeNull()
     expect(nav('start:\n', 'start')).toBeNull()
   })
 })

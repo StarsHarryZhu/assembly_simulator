@@ -2,16 +2,19 @@
 /**
  * Instruction set tab: pick an instruction (or type a line), set its operands, and see the machine code as bit
  * fields. Pseudo-instructions show every basic instruction they expand to. Below, a demo runs the line.
+ * Instructions with a reference table (syscall services, CP0, ...) show it under the title card; a line
+ * that starts with a directive shows the directive table instead, with that directive highlighted.
  */
 import type { Text } from '../../core/i18n'
 import { lang, t, tx } from '../i18n'
 import { plainDesc } from '../ide/editor'
 import { computed, reactive, ref, watch } from 'vue'
 import { binGroups, hex8 } from '../../core/format'
-import type { CatalogEntry, IsaPlugin } from '../../core/isa'
+import type { IsaPlugin, RefRow } from '../../core/isa'
 import { load, save } from '../storage'
 import BitFields from './BitFields.vue'
 import DemoRunner from './DemoRunner.vue'
+import ReferenceTable from './ReferenceTable.vue'
 import { parseWord } from './values'
 
 const props = defineProps<{ isa: IsaPlugin; request?: { line: string; n: number } | null }>()
@@ -51,26 +54,76 @@ const analysis = computed(() => (void lang.value, isa.analyzeLine(line.value, { 
 const descOf = new Map<string, Text>()
 for (const e of isa.catalog) if (!e.pseudo && !descOf.has(e.mnemonic)) descOf.set(e.mnemonic, e.description)
 
-const mnemonics = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  const seen = new Map<string, CatalogEntry>()
-  for (const e of isa.catalog) {
-    if (group.value !== 'all' && e.group !== group.value) continue
-    if (q && !e.mnemonic.includes(q) && !e.description.zh.includes(q) && !e.description.en.toLowerCase().includes(q)) continue
-    if (!seen.has(e.mnemonic)) seen.set(e.mnemonic, e)
-  }
-  return [...seen.values()]
+// Searching for what a reference row names ("sbrk", "打印字符串", "epc") finds the instructions it belongs to.
+const referenceText = new Map<string, string>()
+for (const table of isa.references ?? []) {
+  const words = [table.title, ...table.groups.flatMap((g) => g.rows.map((r) => r.title))].flatMap((x) => [x.zh, x.en])
+  for (const m of table.mnemonics) referenceText.set(m, [referenceText.get(m) ?? '', ...words].join('\n').toLowerCase())
+}
+
+/** Picker group of the directives, after the ISA's instruction groups. */
+const DIRECTIVES = 'directives'
+
+// Each directive's row in a reference table, for the picker and the title card.
+const directiveRows = new Map<string, RefRow>()
+for (const table of isa.references ?? [])
+  for (const g of table.groups) for (const row of g.rows) if (isa.language.directives.includes(row.key)) directiveRows.set(row.key, row)
+
+/** The line to put in the input for a directive: its example's line that uses it (examples may span lines). */
+const directiveLine = (d: string) => directiveRows.get(d)?.example?.split('\n').find((l) => l.includes(d))?.trim() ?? d
+
+/** The directive the line starts with, after any labels; null for an instruction. */
+const directive = computed(() => {
+  const d = /^\s*(?:[\w.$]+:\s*)*(\.[A-Za-z_]\w*)/.exec(line.value)?.[1]?.toLowerCase()
+  return d && isa.language.directives.includes(d) ? d : null
 })
 
+interface Item {
+  key: string
+  name: string
+  tip: string
+  line: string
+}
+
+const items = computed<Item[]>(() => {
+  void lang.value
+  const q = query.value.trim().toLowerCase()
+  const out: Item[] = []
+  const seen = new Set<string>()
+  for (const e of isa.catalog) {
+    if (group.value === DIRECTIVES || (group.value !== 'all' && e.group !== group.value) || seen.has(e.mnemonic)) continue
+    if (q && !e.mnemonic.includes(q) && !e.description.zh.includes(q) && !e.description.en.toLowerCase().includes(q) && !referenceText.get(e.mnemonic)?.includes(q)) continue
+    seen.add(e.mnemonic)
+    out.push({ key: e.key, name: e.mnemonic, tip: plainDesc(e.description), line: e.example })
+  }
+  if (group.value === 'all' || group.value === DIRECTIVES) {
+    for (const [d, row] of directiveRows) {
+      const words = [row.title, ...(row.text ? [row.text] : [])].flatMap((x) => [x.zh, x.en.toLowerCase()])
+      if (q && !d.includes(q) && !words.some((w) => w.includes(q))) continue
+      const tip = row.text ? t(`${tx(row.title)}：${tx(row.text)}`, `${tx(row.title)}: ${tx(row.text)}`) : tx(row.title)
+      out.push({ key: `dir${d}`, name: d, tip, line: directiveLine(d) })
+    }
+  }
+  return out
+})
+
+const current = computed(() => directive.value ?? analysis.value.mnemonic)
+const directiveRow = computed(() => (directive.value ? (directiveRows.get(directive.value) ?? null) : null))
+
 const forms = computed(() => isa.catalog.filter((e) => e.mnemonic === analysis.value.mnemonic))
+
+const references = computed(() => {
+  const m = directive.value ?? analysis.value.entry?.mnemonic
+  return m ? (isa.references ?? []).filter((r) => r.mnemonics.includes(m)) : []
+})
 
 const groupTitle = (id: string) => {
   const g = isa.catalogGroups.find((x) => x.id === id)
   return g ? tx(g.title) : id
 }
 
-function pick(e: CatalogEntry) {
-  line.value = e.example
+function pick(example: string) {
+  line.value = example
 }
 
 function setOperand(i: number, text: string) {
@@ -95,34 +148,48 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
       <div class="chips groups" role="radiogroup" :aria-label="t('指令分类', 'Instruction groups')">
         <button class="chip" :aria-pressed="group === 'all'" @click="group = 'all'">{{ t('全部', 'All') }}</button>
         <button v-for="g in isa.catalogGroups" :key="g.id" class="chip" :aria-pressed="group === g.id" @click="group = g.id">{{ tx(g.title) }}</button>
+        <button v-if="directiveRows.size" class="chip" :aria-pressed="group === DIRECTIVES" @click="group = DIRECTIVES">{{ t('伪操作', 'Directives') }}</button>
       </div>
-      <input v-model="query" class="inp search" type="search" :placeholder="t('搜索指令或说明，如 sll、乘法', 'Search instructions or descriptions, e.g. sll, multiply')"
+      <input v-model="query" class="inp search" type="search" :placeholder="t('搜索指令、伪操作或说明，如 sll、乘法、.word', 'Search instructions, directives or descriptions, e.g. sll, multiply, .word')"
         spellcheck="false"
         :aria-label="t('搜索指令', 'Search instructions')"
       />
       <div class="list" role="listbox" :aria-label="t('指令', 'Instructions')">
         <button
-          v-for="e in mnemonics"
+          v-for="e in items"
           :key="e.key"
           class="chip mn"
           role="option"
-          :aria-selected="analysis.mnemonic === e.mnemonic"
-          :aria-pressed="analysis.mnemonic === e.mnemonic"
-          :title="plainDesc(e.description)"
-          @click="pick(e)"
+          :aria-selected="current === e.name"
+          :aria-pressed="current === e.name"
+          :title="e.tip"
+          @click="pick(e.line)"
         >
-          {{ e.mnemonic }}
+          {{ e.name }}
         </button>
-        <p v-if="!mnemonics.length" class="small muted">{{ t('没有匹配的指令。', 'No matching instructions.') }}</p>
+        <p v-if="!items.length" class="small muted">{{ t('没有匹配的指令或伪操作。', 'No matching instructions or directives.') }}</p>
       </div>
-      <p class="small muted count">{{ t(`${mnemonics.length} 个助记符`, `${mnemonics.length} mnemonics`) }}</p>
+      <p class="small muted count">{{ t(`${items.length} 项`, `${items.length} items`) }}</p>
     </aside>
 
     <section class="main">
       <div class="card box">
         <label class="lbl small muted" for="calc-line">{{ t('一行汇编（可以直接改）', 'One line of assembly (edit it directly)') }}</label>
         <input id="calc-line" v-model="line" class="inp line" spellcheck="false" autocomplete="off" />
-        <p v-if="analysis.error" class="err small">{{ analysis.error }}</p>
+        <p v-if="analysis.error && !directive" class="err small">{{ analysis.error }}</p>
+
+        <template v-if="directive">
+          <div class="title">
+            <b class="mono">{{ directive }}</b>
+            <span class="badge">{{ t('伪操作', 'Directive') }}</span>
+            <span v-if="directiveRow" class="desc">{{ tx(directiveRow.title) }}</span>
+          </div>
+          <p v-if="directiveRow?.text" class="dir-text">{{ tx(directiveRow.text) }}</p>
+          <p v-if="directiveRow?.note" class="dir-text muted">{{ tx(directiveRow.note) }}</p>
+          <p class="small muted">{{
+            t('伪操作不会变成机器码，所以这里没有位域和演示。所有伪操作都在下面的表里，这一个已标出。', 'A directive produces no machine code, so there are no bit fields or demo. Every directive is in the table below, with this one highlighted.')
+          }}</p>
+        </template>
 
         <template v-if="analysis.entry">
           <div class="title">
@@ -134,7 +201,7 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
           </div>
           <div v-if="forms.length > 1" class="forms">
             <span class="small muted">{{ t('写法', 'Forms') }}</span>
-            <button v-for="f in forms" :key="f.key" class="chip" :aria-pressed="f.key === analysis.entry.key" :title="plainDesc(f.description)" @click="pick(f)">
+            <button v-for="f in forms" :key="f.key" class="chip" :aria-pressed="f.key === analysis.entry.key" :title="plainDesc(f.description)" @click="pick(f.example)">
               {{ f.example }}
             </button>
           </div>
@@ -160,6 +227,8 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
           </div>
         </template>
       </div>
+
+      <ReferenceTable v-for="r in references" :key="r.id" :table="r" :current="directive ?? undefined" />
 
       <div v-if="analysis.ok" class="card box">
         <div class="code-head">
@@ -273,6 +342,11 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
 .desc {
   color: var(--text-secondary);
   font-size: 13px;
+}
+.dir-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
 }
 .forms {
   display: flex;

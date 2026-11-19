@@ -17,6 +17,8 @@ English examples identical in code to the Chinese ones, localized error messages
 - `machine.test.ts` — register status, undo, input.
 - `calc.test.ts` — one-line analysis, pseudo expansions, line building, demo inputs.
 - `i18n.test.ts` — translation coverage and consistency.
+- `references.test.ts` — reference tables against the engine: syscall codes, exception codes, CP0
+  registers, every directive with an example that assembles, real names, both languages.
 - `regs.ts` — register numbers used by the tests.
 
 ## 4. Progress

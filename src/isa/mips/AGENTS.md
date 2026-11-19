@@ -19,7 +19,8 @@ generated from it, so they cannot drift apart.
 
 ## 3. Contents
 
-- `index.ts` — the `IsaPlugin` object, catalog, groups, memory layout, bilingual examples.
+- `index.ts` — the `IsaPlugin` object, catalog, groups, memory layout, bilingual examples, and which
+  operands take a code or data label (read off the forms).
 - `registers.ts` — register names, flat ids, banks and bilingual notes.
 - `formats.ts` — bit-field layouts of every format and their titles.
 - `instructions` — the basic-instruction table with semantics.
@@ -31,6 +32,9 @@ generated from it, so they cannot drift apart.
 - `assembler.ts` — preprocessing (`.include`, `.eqv`, macros), two passes, data directives, diagnostics.
 - `cpu.ts` — the machine: registers, memory, exceptions, read/write status, undo, fast run loop.
 - `syscalls.ts` — the 39 MARS syscalls, Java-compatible random numbers and number parsing.
+- `references.ts` — reference tables: syscall services, coprocessor 0 registers, exception codes,
+  floating-point condition flags, every directive with an example; written from the engine's
+  behaviour and checked against it.
 - `calc.ts` — one line assembled on its own for the calculator, with demo starting values.
 - `examples` — example programs for the IDE's menu.
 

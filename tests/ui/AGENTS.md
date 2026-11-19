@@ -14,8 +14,8 @@ themselves are checked by hand in the browser.
 
 ## 3. Contents
 
-- `editor.test.ts` — line scan, source index, section directive layout on input, suggestions,
-  modifier-click targets.
+- `editor.test.ts` — line scan, source index (label kinds and declarations), section directive layout
+  on input, suggestions (labels by operand), modifier-click targets.
 - `memory.test.ts` — memory panel entries: kernel addresses, large buffers, undeclared writes.
 
 ## 4. Progress

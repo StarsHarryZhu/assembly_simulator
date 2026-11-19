@@ -25,8 +25,11 @@ data declaration plus heap blocks and other written ranges.
   suggestions, modifier-click) uses the one line scan `scanLine` in `editor.ts`, which reads identifiers
   the way the assembler does (`.L1`, `a$b`). Labels and macros come from the shared `sourceIndex` state
   field, rebuilt once per document change; never rescan the document on hover, scroll or selection.
+- Label suggestions come from that index: a label in a data section (`language.dataSections`) is data and
+  shows its declaration, any other is code and shows its line. Where an operand takes a label
+  (`language.labelOperands`), the list opens before anything is typed, with the wanted kind first.
 - Modifier-click (⌘ on macOS, Ctrl elsewhere) is handled in `editor.ts`, not by the browser's follow-link
-  behaviour: a mnemonic opens its statement in the instruction set tab, a label reference or macro call
+  behaviour: a mnemonic or directive opens its statement in the instruction set tab, a label reference or macro call
   jumps to its definition. While the modifier is held over a target, `editor.ts` underlines it and shows
   a hand cursor, as VS Code does, and clears the decoration when the modifier is released or the pointer
   leaves the token. Included files have no editor, so their labels cannot be jumped to.
@@ -38,8 +41,8 @@ data declaration plus heap blocks and other written ranges.
 - `IdeView.vue` — layout, shortcuts, file drop, New/Open/examples with the unsaved-changes prompt;
   forwards the editor's `open-instruction` event to the app.
 - `useSession.ts` — creates the session, version counter, busy state, saved code and settings, sound.
-- `editor.ts` — CodeMirror language, label and section marks, VS Code-style suggestions, auto-closed
-  quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback.
+- `editor.ts` — CodeMirror language, label and section marks, VS Code-style suggestions (with a short
+  index of an instruction's reference tables, and each directive's explanation), auto-closed quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback.
 - `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line);
   emits `open-instruction` for a modifier-clicked mnemonic.
 - `Toolbar.vue` — new, open, download, examples, run controls, interval, step size (line by default), status.
@@ -48,7 +51,8 @@ data declaration plus heap blocks and other written ranges.
 - `files.ts` — saving bytes or text as a browser download.
 - `RegisterPanel.vue` — all register banks in one grid with use colours, last-step highlight, details.
 - `StackPanel.vue` — words from `$sp` up to the stack base, top first.
-- `MemoryPanel.vue` — data declarations, heap blocks and other written memory.
+- `MemoryPanel.vue` — data declarations, heap blocks and other written memory; rows in fixed `ch`
+  columns, strings and `.space` as hex plus one character cell per byte.
 - `memoryEntries.ts` — builds the memory panel's entries and summaries (cost independent of sizes).
 - `TextSegmentView.vue` — the assembled machine code next to the source.
 - `DialogHost.vue` — dialogs for the syscalls 50–59.

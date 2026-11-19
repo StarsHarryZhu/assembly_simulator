@@ -18,6 +18,7 @@ import {
   completionKeymap,
   type Completion,
   type CompletionContext,
+  type CompletionResult,
 } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
@@ -40,7 +41,7 @@ import {
   type ViewUpdate,
 } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
-import type { IsaPlugin } from '../../core/isa'
+import type { IsaPlugin, LabelKind, ReferenceTable, RefRow } from '../../core/isa'
 import { sectionIndent } from '../../core/source'
 
 /* ---------------------------------------------------------------- language */
@@ -104,12 +105,15 @@ const highlight = HighlightStyle.define([
 
 interface AsmSyntax {
   comment: string
+  /** Section directives, lower case. */
   sections: Set<string>
+  /** The section directives whose labels name data, lower case. */
+  dataSections: Set<string>
 }
 
 /** The comment character and section directives of the ISA being edited. */
 const asmSyntax = Facet.define<AsmSyntax, AsmSyntax>({
-  combine: (values) => values[0] ?? { comment: '#', sections: new Set() },
+  combine: (values) => values[0] ?? { comment: '#', sections: new Set(), dataSections: new Set() },
 })
 
 /** A word of a statement: a label definition, the head (mnemonic, directive or macro name), or an operand. */
@@ -181,25 +185,65 @@ interface Location {
   col: number
 }
 
+export interface LabelDef extends Location {
+  /** Data when it is defined in a data section (`.data`, `.kdata`), code otherwise. */
+  kind: LabelKind
+  /** The statement it names, without the comment: its own line's, or the next statement's when alone. */
+  decl: string
+}
+
 export interface SourceIndex {
-  labels: Map<string, Location>
+  labels: Map<string, LabelDef>
   macros: Map<string, Location>
 }
 
-/** Labels (the first on a line, as the assembler takes them) and macros defined in the document. */
+/** A statement's text from `from` on, without the trailing comment (comment characters in strings stay). */
+function statementText(text: string, from: number, comment: string): string {
+  let quote = ''
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]!
+    if (quote) {
+      if (c === '\\') i++
+      else if (c === quote) quote = ''
+    } else if (c === '"' || c === "'") quote = c
+    else if (comment && text.startsWith(comment, i)) return text.slice(from, i).trim()
+  }
+  return text.slice(from).trim()
+}
+
+const SECTION_HEAD = /^\s*(\.[A-Za-z]\w*)/
+
+/**
+ * Labels (the first on a line, as the assembler takes them) with their kind and statement, and macros.
+ * Only lines with a colon, a section directive or `.macro` are scanned, plus the line after a lone label.
+ */
 function buildIndex(state: EditorState): SourceIndex {
-  const { comment, sections } = state.facet(asmSyntax)
-  const labels = new Map<string, Location>()
+  const { comment, sections, dataSections } = state.facet(asmSyntax)
+  const labels = new Map<string, LabelDef>()
   const macros = new Map<string, Location>()
+  let inData = false
+  let waiting: LabelDef[] = [] // lone labels whose statement is on a later line
   let n = 0
   for (const iter = state.doc.iterLines(); !iter.next().done; ) {
     n++
     const text = iter.value
-    if (!text.includes(':') && !/\.macro/i.test(text)) continue
+    const section = SECTION_HEAD.exec(text)?.[1]?.toLowerCase()
+    if (section && sections.has(section)) inData = dataSections.has(section)
+    if (!waiting.length && !text.includes(':') && !/\.macro/i.test(text)) continue
     const { pieces } = scanLine(text, comment, sections)
-    const first = pieces[0]
-    if (first?.role === 'label' && !labels.has(first.text)) labels.set(first.text, { line: n, col: first.from })
     const h = pieces.findIndex((p) => p.role === 'head')
+    if (h >= 0 && waiting.length && !sections.has(pieces[h]!.text.toLowerCase())) {
+      const decl = statementText(text, pieces[h]!.from, comment)
+      for (const d of waiting) d.decl = decl
+      waiting = []
+    }
+    const first = pieces[0]
+    if (first?.role === 'label' && !labels.has(first.text)) {
+      const def: LabelDef = { line: n, col: first.from, kind: inData ? 'data' : 'code', decl: '' }
+      labels.set(first.text, def)
+      if (h >= 0) def.decl = statementText(text, pieces[h]!.from, comment)
+      else waiting.push(def)
+    }
     const name = pieces[h + 1]
     if (h >= 0 && pieces[h]!.text.toLowerCase() === '.macro' && name && !macros.has(name.text)) macros.set(name.text, { line: n, col: name.from })
   }
@@ -300,11 +344,12 @@ export function navigationTarget(state: EditorState, pos: number, isa: IsaPlugin
   if (hit.role === 'head') {
     const macro = index.macros.get(hit.text)
     if (macro) return { kind: 'definition', what: 'macro', name: hit.text, ...macro, ...at }
-    if (isMnemonic(isa, hit.text)) return { kind: 'instruction', line: line.text.slice(hit.from).trimEnd(), ...at }
+    // A mnemonic or a directive opens its statement in the instruction set tab.
+    if (isMnemonic(isa, hit.text) || isa.language.directives.includes(hit.text.toLowerCase())) return { kind: 'instruction', line: line.text.slice(hit.from).trimEnd(), ...at }
     return null
   }
   const label = index.labels.get(hit.text)
-  return label ? { kind: 'definition', what: 'label', name: hit.text, ...label, ...at } : null
+  return label ? { kind: 'definition', what: 'label', name: hit.text, line: label.line, col: label.col, ...at } : null
 }
 
 function isMacPlatform(): boolean {
@@ -445,7 +490,7 @@ export function editorNavigation(isa: IsaPlugin, handlers: NavigationHandlers): 
 
 /* ---------------------------------------------------------------- completion */
 
-type Kind = 'instruction' | 'register' | 'directive' | 'label'
+type Kind = 'instruction' | 'register' | 'directive' | 'label' | 'data'
 
 /** Outline icons in the spirit of VS Code's symbol icons, drawn as inline SVG. */
 const ICON_PATHS: Record<Kind, string> = {
@@ -453,6 +498,8 @@ const ICON_PATHS: Record<Kind, string> = {
   register: 'M5.5 3.5h-2v9h2M10.5 3.5h2v9h-2M6.5 6.5h3v3h-3z',
   directive: 'M3 4.5h10M3 8h10M3 11.5h6',
   label: 'M2.5 4h7l4 4-4 4h-7zM6 8h.01',
+  // A row of memory cells.
+  data: 'M1.5 5.5h13v5h-13zM5.8 5.5v5M10.2 5.5v5',
 }
 const SVG = 'http://www.w3.org/2000/svg'
 
@@ -483,7 +530,9 @@ export function completer(isa: IsaPlugin) {
     byName.set(e.mnemonic, list)
     if (!descs.has(e.mnemonic)) descs.set(e.mnemonic, e.description)
   }
-  // The details panel: first form, description, every form.
+  const references = new Map<string, ReferenceTable[]>()
+  for (const table of isa.references ?? []) for (const m of table.mnemonics) references.set(m, [...(references.get(m) ?? []), table])
+  // The details panel: first form, description, every form, then a short index of each reference table.
   const docFor = (name: string, examples: string[]) => () => {
     const box = el('div', 'cm-asm-doc')
     box.appendChild(el('div', 'cm-asm-doc-head', examples[0]!))
@@ -493,6 +542,25 @@ export function completer(isa: IsaPlugin) {
       const list = box.appendChild(el('div', 'cm-asm-doc-forms'))
       for (const ex of examples.slice(0, 14)) list.appendChild(el('div', '', ex))
       if (examples.length > 14) list.appendChild(el('div', '', '…'))
+    }
+    const tables = references.get(name)
+    if (tables) {
+      const index = box.appendChild(el('div', 'cm-asm-doc-refs'))
+      for (const table of tables) {
+        index.appendChild(el('div', 'cm-asm-doc-title', tx(table.title)))
+        for (const g of table.groups) {
+          if (g.title) index.appendChild(el('div', 'cm-asm-doc-group', tx(g.title)))
+          const grid = index.appendChild(el('div', 'cm-asm-doc-keys'))
+          for (const r of g.rows) {
+            grid.appendChild(el('span', 'cm-asm-doc-key', r.key.split(/\s+/).join(' ')))
+            grid.appendChild(el('span', '', tx(r.title)))
+          }
+        }
+      }
+      const mod = isMacPlatform() ? '⌘' : 'Ctrl'
+      box.appendChild(
+        el('div', 'cm-asm-doc-hint', L(`${mod}+点击代码里的 ${name}，在“指令集”里看完整的表。`, `${mod}-click ${name} in the code for the full table in the Instruction set tab.`)),
+      )
     }
     return box
   }
@@ -517,23 +585,76 @@ export function completer(isa: IsaPlugin) {
     }
   }
   const registers = (): Completion[] => isa.language.registers.map((r) => ({ label: r, type: 'register', detail: regNotes.get(r)?.() ?? '' }))
-  const directives: Completion[] = isa.language.directives.map((d) => ({ label: d, type: 'directive' }))
+  // Directives: the title as detail, and the reference row (example, meaning, caveats) as details panel.
+  const directiveRows = new Map<string, RefRow>()
+  for (const table of isa.references ?? [])
+    for (const g of table.groups) for (const row of g.rows) if (isa.language.directives.includes(row.key)) directiveRows.set(row.key, row)
+  const directiveDoc = (row: RefRow) => () => {
+    const box = el('div', 'cm-asm-doc')
+    if (row.example) box.appendChild(el('div', 'cm-asm-doc-head cm-asm-doc-code', row.example))
+    box.appendChild(el('div', 'cm-asm-doc-name', tx(row.title)))
+    if (row.text) box.appendChild(el('div', 'cm-asm-doc-desc', tx(row.text)))
+    if (row.note) box.appendChild(el('div', 'cm-asm-doc-note', tx(row.note)))
+    return box
+  }
+  const directives = (): Completion[] =>
+    isa.language.directives.map((d) => {
+      const row = directiveRows.get(d)
+      return row ? { label: d, type: 'directive', detail: tx(row.title), info: directiveDoc(row) } : { label: d, type: 'directive' }
+    })
   const atStatementStart = (before: string) => /^\s*([\w.]+:\s*)*$/.test(before)
-  return (ctx: CompletionContext) => {
+
+  /**
+   * The operand being typed: the statement's mnemonic, its position (commas so far) and its text so far.
+   * Null at the start of a statement.
+   */
+  const operandAt = (before: string): { mnemonic: string; at: number; text: string } | null => {
+    const m = /^\s*(?:[.\w$]+\s*:\s*)*([.\w]+)\s+(.*)$/.exec(before)
+    if (!m) return null
+    const parts = m[2]!.split(',')
+    return { mnemonic: m[1]!.toLowerCase(), at: parts.length - 1, text: parts[parts.length - 1]!.trim() }
+  }
+  const wantedKind = (op: ReturnType<typeof operandAt>): LabelKind | null => (op && isa.language.labelOperands[op.mnemonic]?.[op.at]) ?? null
+
+  // Labels: data ones show their declaration and get their own icon; code ones show their line. The kind
+  // the operand wants comes first.
+  const short = (s: string) => (s.length > 32 ? s.slice(0, 31) + '…' : s)
+  const labelDoc = (name: string, d: LabelDef) => () => {
+    const box = el('div', 'cm-asm-doc')
+    box.appendChild(el('div', 'cm-asm-doc-head cm-asm-doc-code', d.decl ? `${name}: ${d.decl}` : `${name}:`))
+    box.appendChild(
+      el('div', 'cm-asm-doc-desc', d.kind === 'data' ? L(`数据标签，第 ${d.line} 行：这段内存的起始地址`, `Data label, line ${d.line}: the address where this memory starts`) : L(`代码标签，第 ${d.line} 行：可以跳转到这里`, `Code label, line ${d.line}: a place to branch or jump to`)),
+    )
+    return box
+  }
+  const labelOptions = (state: EditorState, wants: LabelKind | null): Completion[] =>
+    [...sourceIndex(state).labels].map(([name, d]) => ({
+      label: name,
+      type: d.kind === 'data' ? 'data' : 'label',
+      detail: d.kind === 'data' ? short(d.decl) : L(`第 ${d.line} 行`, `line ${d.line}`),
+      info: labelDoc(name, d),
+      boost: wants && d.kind === wants ? 10 : 0,
+    }))
+  const labels = (state: EditorState, from: number, wants: LabelKind | null): CompletionResult | null => {
+    const options = labelOptions(state, wants)
+    return options.length ? { from, options, validFor: /^[\w.$]*$/ } : null
+  }
+
+  return (ctx: CompletionContext): CompletionResult | null => {
     const word = ctx.matchBefore(/[$.%]?[\w.$]*/)
-    if (!word || (word.from === word.to && !ctx.explicit)) return null
+    if (!word) return null
     const before = ctx.state.sliceDoc(ctx.state.doc.lineAt(ctx.pos).from, word.from)
     if (before.includes(isa.language.commentChar) || /["']/.test(before)) return null
-    if (word.text.startsWith('$')) return { from: word.from, options: registers(), validFor: /^\$\w*$/ }
-    if (word.text.startsWith('.') && atStatementStart(before)) return { from: word.from, options: directives, validFor: /^\.\w*$/ }
-    if (atStatementStart(before)) return { from: word.from, options: mnemonicOptions(), validFor: /^[\w.]*$/ }
-    if (/^[.A-Za-z_]?[\w.$]*$/.test(word.text)) {
-      const own = ctx.state.doc.lineAt(ctx.pos).number
-      const options = [...sourceIndex(ctx.state).labels]
-        .filter(([, at]) => at.line !== own)
-        .map(([name, at]) => ({ label: name, type: 'label', detail: L(`第 ${at.line} 行`, `line ${at.line}`) }))
-      return options.length ? { from: word.from, options, validFor: /^[\w.$]*$/ } : null
+    if (word.from === word.to && !ctx.explicit) {
+      // Nothing typed yet: open the labels only where the operand takes one (after `la $a0, `, `j `).
+      const op = operandAt(before)
+      const wants = op && !op.text ? wantedKind(op) : null
+      return wants ? labels(ctx.state, word.from, wants) : null
     }
+    if (word.text.startsWith('$')) return { from: word.from, options: registers(), validFor: /^\$\w*$/ }
+    if (word.text.startsWith('.') && atStatementStart(before)) return { from: word.from, options: directives(), validFor: /^\.\w*$/ }
+    if (atStatementStart(before)) return { from: word.from, options: mnemonicOptions(), validFor: /^[\w.]*$/ }
+    if (/^[.A-Za-z_]?[\w.$]*$/.test(word.text)) return labels(ctx.state, word.from, wantedKind(operandAt(before)))
     return null
   }
 }
@@ -702,6 +823,7 @@ const theme = EditorView.theme({
   '.cm-asm-icon-register': { color: 'var(--suggest-icon-reg)' },
   '.cm-asm-icon-directive': { color: 'var(--suggest-icon-dir)' },
   '.cm-asm-icon-label': { color: 'var(--series-6)', strokeWidth: '1.4' },
+  '.cm-asm-icon-data': { color: 'var(--series-2)', strokeWidth: '1.3' },
   '.cm-tooltip-autocomplete li[aria-selected] .cm-asm-icon': { color: 'inherit' },
   '.cm-tooltip.cm-completionInfo': {
     backgroundColor: 'var(--suggest-bg)',
@@ -717,6 +839,21 @@ const theme = EditorView.theme({
   '.cm-asm-doc-desc': { fontFamily: 'var(--font-sans)', fontSize: '12.5px', lineHeight: '1.5' },
   '.cm-asm-doc-title': { fontFamily: 'var(--font-sans)', fontSize: '11.5px', color: 'var(--suggest-muted)', margin: '8px 0 2px' },
   '.cm-asm-doc-forms': { fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.55', whiteSpace: 'pre' },
+  '.cm-asm-doc-refs': { maxHeight: '260px', overflowY: 'auto', marginRight: '-6px', paddingRight: '6px' },
+  '.cm-asm-doc-group': { fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: '600', color: 'var(--suggest-muted)', margin: '5px 0 1px' },
+  '.cm-asm-doc-keys': {
+    display: 'grid',
+    gridTemplateColumns: 'max-content minmax(0, 1fr)',
+    columnGap: '8px',
+    fontFamily: 'var(--font-sans)',
+    fontSize: '12px',
+    lineHeight: '1.5',
+  },
+  '.cm-asm-doc-key': { fontFamily: 'var(--font-mono)', textAlign: 'right', color: 'var(--suggest-match)' },
+  '.cm-asm-doc-code': { whiteSpace: 'pre' },
+  '.cm-asm-doc-name': { fontFamily: 'var(--font-sans)', fontSize: '12.5px', fontWeight: '600', marginBottom: '2px' },
+  '.cm-asm-doc-note': { fontFamily: 'var(--font-sans)', fontSize: '11.5px', lineHeight: '1.5', color: 'var(--suggest-muted)', marginTop: '6px' },
+  '.cm-asm-doc-hint': { fontFamily: 'var(--font-sans)', fontSize: '11.5px', color: 'var(--suggest-muted)', marginTop: '8px' },
   '.cm-diagnostic': { fontFamily: 'var(--font-sans)', fontSize: '12.5px' },
   '.cm-panels': { backgroundColor: 'var(--surface-2)', color: 'var(--text-primary)' },
   '.cm-searchMatch': { backgroundColor: 'var(--bg-warning)' },
@@ -744,7 +881,11 @@ export function editorExtensions(isa: IsaPlugin, extra: Extension[] = []): Exten
     EditorState.tabSize.of(4),
     asmLanguage(isa),
     syntaxHighlighting(highlight),
-    asmSyntax.of({ comment: isa.language.commentChar, sections: new Set(isa.language.sections.map((d) => d.toLowerCase())) }),
+    asmSyntax.of({
+      comment: isa.language.commentChar,
+      sections: new Set(isa.language.sections.map((d) => d.toLowerCase())),
+      dataSections: new Set(isa.language.dataSections.map((d) => d.toLowerCase())),
+    }),
     sourceIndexField,
     labelAndSectionMarks(),
     flushSectionsOnInput(isa.language.sections),
