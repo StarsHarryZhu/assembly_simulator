@@ -1,7 +1,7 @@
 {
   "name": "assembly-simulator",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Browser-based assembly IDE and simulator: MIPS32 with the full MARS 4.5 instruction set.",
   "license": "MIT",
