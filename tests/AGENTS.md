@@ -16,6 +16,7 @@ AGENTS.md checker keeps the folder documentation in the required shape.
 ## 3. Contents
 
 - `golden.test.ts` — compares our assembler and machine with the MARS fixtures, program by program.
+- `version.test.ts` — the header version is the version in package.json.
 - `agents-md.test.ts` — every folder has an AGENTS.md with the four sections and a complete contents list.
 - `helpers.ts` — a console environment that feeds stdin the way the MARS command line does.
 - `core` — session tests.
