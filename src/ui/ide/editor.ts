@@ -23,7 +23,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
 import { lintGutter } from '@codemirror/lint'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { EditorState, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state'
+import { EditorState, Facet, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -70,13 +70,15 @@ function asmLanguage(isa: IsaPlugin) {
         }
         return 'string'
       }
-      if (stream.match(/^\$[A-Za-z0-9]+/)) return 'variableName.special'
-      if (stream.match(/^\.[A-Za-z_]\w*/)) return sections.has(stream.current().toLowerCase()) ? 'namespace' : 'meta'
       if (stream.match(/^[-+]?(0x[0-9a-fA-F]+|0b[01]+|\d+(\.\d+)?([eE][-+]?\d+)?)\b/)) return 'number'
       if (stream.match(/^%\w+/)) return 'atom'
-      if (stream.match(/^[A-Za-z_][\w.]*/)) {
-        if (stream.peek() === ':') return 'labelName'
-        return mnemonics.has(stream.current().toLowerCase()) ? 'keyword' : 'variableName'
+      // Identifiers as the assembler reads them: registers ($t0), directives (.word), labels (.L1, a$b).
+      if (stream.match(/^\.?[A-Za-z_$][\w.$]*/)) {
+        const word = stream.current()
+        if (/^[ \t]*:/.test(stream.string.slice(stream.pos))) return 'labelName'
+        if (word[0] === '$') return 'variableName.special'
+        if (word[0] === '.') return sections.has(word.toLowerCase()) ? 'namespace' : 'meta'
+        return mnemonics.has(word.toLowerCase()) ? 'keyword' : 'variableName'
       }
       stream.next()
       return null
@@ -98,23 +100,44 @@ const highlight = HighlightStyle.define([
   { tag: t.atom, color: 'var(--series-4)' },
 ])
 
-/* ---------------------------------------------------------------- labels and sections */
+/* ---------------------------------------------------------------- one scan per line, one index per document */
 
-interface LineScan {
-  /** Labels defined at the start of the line (`name:`). */
-  defs: string[]
-  /** Identifiers in operand position, as offsets into the line. */
-  refs: { from: number; to: number; name: string }[]
-  /** The statement is a section directive. */
+interface AsmSyntax {
+  comment: string
+  sections: Set<string>
+}
+
+/** The comment character and section directives of the ISA being edited. */
+const asmSyntax = Facet.define<AsmSyntax, AsmSyntax>({
+  combine: (values) => values[0] ?? { comment: '#', sections: new Set() },
+})
+
+/** A word of a statement: a label definition, the head (mnemonic, directive or macro name), or an operand. */
+export interface Piece {
+  text: string
+  from: number
+  to: number
+  role: 'label' | 'head' | 'ref'
+}
+
+export interface ScannedLine {
+  pieces: Piece[]
+  /** The head is a section directive (`.text`, `.data`, …). */
   section: boolean
 }
 
-const TOKEN = /\$\w+|\.[A-Za-z_]\w*|[A-Za-z_][\w.]*|[-+]?\d[\w.]*|%\w+|./y
+/** Numbers, identifiers as the assembler reads them (`$t0`, `.word`, `.L1`, `a$b`), macro parameters, any other character. */
+const TOKEN = /[-+]?\d[\w.]*|\.?[A-Za-z_$][\w.$]*|%\w+|./y
+const IDENT = /^\.?[A-Za-z_$]/
 
-/** A light scan of one line: label definitions, operand identifiers and section directives. */
-export function scanLine(text: string, comment: string, sections: Set<string>): LineScan {
-  const out: LineScan = { defs: [], refs: [], section: false }
-  let seenOp = false
+/**
+ * The one scan behind every editor feature (pink label references, section bands, label suggestions,
+ * modifier-click): the words of a line with their roles, skipping comments, strings and character literals.
+ */
+export function scanLine(text: string, comment: string, sections: Set<string>): ScannedLine {
+  const pieces: Piece[] = []
+  let section = false
+  let head = false
   let i = 0
   while (i < text.length) {
     const c = text[i]!
@@ -122,7 +145,7 @@ export function scanLine(text: string, comment: string, sections: Set<string>): 
       i++
       continue
     }
-    if (text.startsWith(comment, i)) break
+    if (comment && text.startsWith(comment, i)) break
     if (c === '"' || c === "'") {
       i++
       while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1
@@ -132,56 +155,82 @@ export function scanLine(text: string, comment: string, sections: Set<string>): 
     TOKEN.lastIndex = i
     const tok = TOKEN.exec(text)![0]
     const end = i + tok.length
-    if (/^[A-Za-z_]/.test(tok)) {
-      let j = end
-      while (text[j] === ' ' || text[j] === '\t') j++
-      if (!seenOp && text[j] === ':') {
-        out.defs.push(tok)
-        i = j + 1
-        continue
-      }
-      if (seenOp) out.refs.push({ from: i, to: end, name: tok })
-      seenOp = true
-    } else if (tok.length > 1 && tok[0] === '.' && !seenOp) {
-      seenOp = true
-      out.section = sections.has(tok.toLowerCase())
+    if (IDENT.test(tok)) {
+      if (!head) {
+        let j = end
+        while (text[j] === ' ' || text[j] === '\t') j++
+        if (text[j] === ':') {
+          pieces.push({ text: tok, from: i, to: end, role: 'label' })
+          i = j + 1
+          continue
+        }
+        head = true
+        section = sections.has(tok.toLowerCase())
+        pieces.push({ text: tok, from: i, to: end, role: 'head' })
+      } else pieces.push({ text: tok, from: i, to: end, role: 'ref' })
     }
     i = end
   }
-  return out
+  return { pieces, section }
 }
 
-/** Every label defined in the document, with the line it is on. */
-export function labelsField(comment: string, sections: Set<string>) {
-  const collect = (state: EditorState) => {
-    const labels = new Map<string, number>()
-    let n = 0
-    for (const iter = state.doc.iterLines(); !iter.next().done; ) {
-      n++
-      if (!iter.value.includes(':')) continue
-      for (const name of scanLine(iter.value, comment, sections).defs) if (!labels.has(name)) labels.set(name, n)
-    }
-    return labels
+interface Location {
+  /** 1-based line. */
+  line: number
+  /** 0-based column of the name. */
+  col: number
+}
+
+export interface SourceIndex {
+  labels: Map<string, Location>
+  macros: Map<string, Location>
+}
+
+/** Labels (the first on a line, as the assembler takes them) and macros defined in the document. */
+function buildIndex(state: EditorState): SourceIndex {
+  const { comment, sections } = state.facet(asmSyntax)
+  const labels = new Map<string, Location>()
+  const macros = new Map<string, Location>()
+  let n = 0
+  for (const iter = state.doc.iterLines(); !iter.next().done; ) {
+    n++
+    const text = iter.value
+    if (!text.includes(':') && !/\.macro/i.test(text)) continue
+    const { pieces } = scanLine(text, comment, sections)
+    const first = pieces[0]
+    if (first?.role === 'label' && !labels.has(first.text)) labels.set(first.text, { line: n, col: first.from })
+    const h = pieces.findIndex((p) => p.role === 'head')
+    const name = pieces[h + 1]
+    if (h >= 0 && pieces[h]!.text.toLowerCase() === '.macro' && name && !macros.has(name.text)) macros.set(name.text, { line: n, col: name.from })
   }
-  return StateField.define<Map<string, number>>({
-    create: collect,
-    update: (labels, tr) => (tr.docChanged ? collect(tr.state) : labels),
-  })
+  return { labels, macros }
+}
+
+/** Rebuilt once per document change and shared, so hovering and highlighting never rescan the file. */
+const sourceIndexField = StateField.define<SourceIndex>({
+  create: buildIndex,
+  update: (index, tr) => (tr.docChanged ? buildIndex(tr.state) : index),
+})
+
+/** The document's labels and macros (computed on the spot when the field is not installed). */
+export function sourceIndex(state: EditorState): SourceIndex {
+  return state.field(sourceIndexField, false) ?? buildIndex(state)
 }
 
 /** Pink references to defined labels, and a band behind section directive lines (visible lines only). */
-function labelAndSectionMarks(labels: StateField<Map<string, number>>, comment: string, sections: Set<string>) {
+function labelAndSectionMarks(): Extension {
   const refMark = Decoration.mark({ class: 'cm-label-ref' })
   const sectionLine = Decoration.line({ class: 'cm-section-line' })
   const build = (view: EditorView): DecorationSet => {
-    const defined = view.state.field(labels)
+    const { comment, sections } = view.state.facet(asmSyntax)
+    const defined = sourceIndex(view.state).labels
     const ranges = []
     for (const { from, to } of view.visibleRanges) {
       for (let pos = from; pos <= to; ) {
         const line = view.state.doc.lineAt(pos)
         const scan = scanLine(line.text, comment, sections)
         if (scan.section) ranges.push(sectionLine.range(line.from))
-        for (const r of scan.refs) if (defined.has(r.name)) ranges.push(refMark.range(line.from + r.from, line.from + r.to))
+        for (const p of scan.pieces) if (p.role === 'ref' && defined.has(p.text)) ranges.push(refMark.range(line.from + p.from, line.from + p.to))
         pos = line.to + 1
       }
     }
@@ -231,70 +280,11 @@ export type NavigationTarget =
   | { kind: 'instruction'; line: string; from: number; to: number }
   | { kind: 'definition'; what: 'label' | 'macro'; name: string; line: number; col: number; from: number; to: number }
 
-interface Piece {
-  text: string
-  from: number
-  to: number
-  role: 'label' | 'head' | 'ref'
-}
-
-interface Location {
-  line: number
-  col: number
-}
-
-/** Words on one statement line with their role, skipping comments, strings and character literals. */
-function linePieces(text: string, comment: string): Piece[] {
-  const out: Piece[] = []
-  let head = false
-  let i = 0
-  while (i < text.length) {
-    const c = text[i]!
-    if (c === ' ' || c === '\t') {
-      i++
-      continue
-    }
-    if (comment && text.startsWith(comment, i)) break
-    if (c === '"' || c === "'") {
-      i++
-      while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1
-      i++
-      continue
-    }
-    TOKEN.lastIndex = i
-    const tok = TOKEN.exec(text)![0]
-    const end = i + tok.length
-    if (/^[A-Za-z_.$][\w.$]*$/.test(tok)) {
-      if (!head) {
-        let j = end
-        while (text[j] === ' ' || text[j] === '\t') j++
-        if (text[j] === ':') {
-          out.push({ text: tok, from: i, to: end, role: 'label' })
-          i = j + 1
-          continue
-        }
-        head = true
-        out.push({ text: tok, from: i, to: end, role: 'head' })
-      } else out.push({ text: tok, from: i, to: end, role: 'ref' })
-    }
-    i = end
-  }
-  return out
-}
-
-/** Labels and macros defined in the document, with the line and column of the name. */
-function sourceIndex(state: EditorState, comment: string) {
-  const labels = new Map<string, Location>()
-  const macros = new Map<string, Location>()
-  for (let n = 1; n <= state.doc.lines; n++) {
-    const pieces = linePieces(state.doc.line(n).text, comment)
-    for (const p of pieces) if (p.role === 'label' && !labels.has(p.text)) labels.set(p.text, { line: n, col: p.from })
-    const head = pieces[0]
-    if (head?.role === 'head' && head.text.toLowerCase() === '.macro' && pieces[1] && !macros.has(pieces[1].text)) {
-      macros.set(pieces[1].text, { line: n, col: pieces[1].from })
-    }
-  }
-  return { labels, macros }
+const mnemonicSets = new WeakMap<IsaPlugin, Set<string>>()
+function isMnemonic(isa: IsaPlugin, word: string): boolean {
+  let set = mnemonicSets.get(isa)
+  if (!set) mnemonicSets.set(isa, (set = new Set(isa.language.mnemonics.map((m) => m.toLowerCase()))))
+  return set.has(word.toLowerCase())
 }
 
 /** What a modifier-click on `pos` opens, if anything. */
@@ -302,17 +292,15 @@ export function navigationTarget(state: EditorState, pos: number, isa: IsaPlugin
   if (pos < 0 || pos > state.doc.length) return null
   const line = state.doc.lineAt(pos)
   const off = pos - line.from
-  const pieces = linePieces(line.text, isa.language.commentChar)
+  const { pieces } = scanLine(line.text, isa.language.commentChar, state.facet(asmSyntax).sections)
   const hit = pieces.find((p) => off >= p.from && off < p.to) ?? pieces.find((p) => off === p.to)
   if (!hit || hit.role === 'label') return null
   const at = { from: line.from + hit.from, to: line.from + hit.to }
-  const index = sourceIndex(state, isa.language.commentChar)
+  const index = sourceIndex(state)
   if (hit.role === 'head') {
     const macro = index.macros.get(hit.text)
     if (macro) return { kind: 'definition', what: 'macro', name: hit.text, ...macro, ...at }
-    if (isa.language.mnemonics.some((m) => m.toLowerCase() === hit.text.toLowerCase())) {
-      return { kind: 'instruction', line: line.text.slice(hit.from).trimEnd(), ...at }
-    }
+    if (isMnemonic(isa, hit.text)) return { kind: 'instruction', line: line.text.slice(hit.from).trimEnd(), ...at }
     return null
   }
   const label = index.labels.get(hit.text)
@@ -486,7 +474,7 @@ function el(tag: string, cls: string, text?: string): HTMLElement {
   return e
 }
 
-export function completer(isa: IsaPlugin, labels: StateField<Map<string, number>>) {
+export function completer(isa: IsaPlugin) {
   const byName = new Map<string, string[]>()
   const descs = new Map<string, Text>()
   for (const e of isa.catalog) {
@@ -532,19 +520,19 @@ export function completer(isa: IsaPlugin, labels: StateField<Map<string, number>
   const directives: Completion[] = isa.language.directives.map((d) => ({ label: d, type: 'directive' }))
   const atStatementStart = (before: string) => /^\s*([\w.]+:\s*)*$/.test(before)
   return (ctx: CompletionContext) => {
-    const word = ctx.matchBefore(/[$.%]?[\w.]*/)
+    const word = ctx.matchBefore(/[$.%]?[\w.$]*/)
     if (!word || (word.from === word.to && !ctx.explicit)) return null
     const before = ctx.state.sliceDoc(ctx.state.doc.lineAt(ctx.pos).from, word.from)
     if (before.includes(isa.language.commentChar) || /["']/.test(before)) return null
     if (word.text.startsWith('$')) return { from: word.from, options: registers(), validFor: /^\$\w*$/ }
     if (word.text.startsWith('.') && atStatementStart(before)) return { from: word.from, options: directives, validFor: /^\.\w*$/ }
     if (atStatementStart(before)) return { from: word.from, options: mnemonicOptions(), validFor: /^[\w.]*$/ }
-    if (/^[A-Za-z_]?[\w.]*$/.test(word.text)) {
+    if (/^[.A-Za-z_]?[\w.$]*$/.test(word.text)) {
       const own = ctx.state.doc.lineAt(ctx.pos).number
-      const options = [...ctx.state.field(labels)]
-        .filter(([, line]) => line !== own)
-        .map(([name, line]) => ({ label: name, type: 'label', detail: L(`第 ${line} 行`, `line ${line}`) }))
-      return options.length ? { from: word.from, options, validFor: /^[\w.]*$/ } : null
+      const options = [...sourceIndex(ctx.state).labels]
+        .filter(([, at]) => at.line !== own)
+        .map(([name, at]) => ({ label: name, type: 'label', detail: L(`第 ${at.line} 行`, `line ${at.line}`) }))
+      return options.length ? { from: word.from, options, validFor: /^[\w.$]*$/ } : null
     }
     return null
   }
@@ -646,7 +634,8 @@ const theme = EditorView.theme({
   '.cm-err-line': { backgroundColor: 'var(--bg-danger)', boxShadow: 'inset 3px 0 var(--danger)' },
   '.cm-bp-gutter .cm-gutterElement': { width: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   '.cm-bp': { display: 'inline-block', width: '9px', height: '9px', borderRadius: '50%', backgroundColor: 'var(--danger)' },
-  '.cm-label-ref': { color: 'var(--series-6)' },
+  // Also on the inner syntax span: a label such as .L1 or $x is otherwise coloured as a directive or register.
+  '.cm-label-ref, .cm-label-ref *': { color: 'var(--series-6)' },
   '.cm-section-line': { backgroundColor: 'var(--bg-section)' },
   '.cm-tooltip': { backgroundColor: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text-primary)' },
   '.cm-nav-link, .cm-nav-link *': {
@@ -736,8 +725,6 @@ const theme = EditorView.theme({
 })
 
 export function editorExtensions(isa: IsaPlugin, extra: Extension[] = []): Extension[] {
-  const sections = new Set(isa.language.sections)
-  const labels = labelsField(isa.language.commentChar, sections)
   return [
     breakpointField,
     gutter({
@@ -757,12 +744,13 @@ export function editorExtensions(isa: IsaPlugin, extra: Extension[] = []): Exten
     EditorState.tabSize.of(4),
     asmLanguage(isa),
     syntaxHighlighting(highlight),
-    labels,
-    labelAndSectionMarks(labels, isa.language.commentChar, sections),
+    asmSyntax.of({ comment: isa.language.commentChar, sections: new Set(isa.language.sections.map((d) => d.toLowerCase())) }),
+    sourceIndexField,
+    labelAndSectionMarks(),
     flushSectionsOnInput(isa.language.sections),
     closeBrackets(),
     autocompletion({
-      override: [completer(isa, labels)],
+      override: [completer(isa)],
       icons: false,
       addToOptions: [{ render: (c) => icon(c.type ?? ''), position: 20 }],
     }),

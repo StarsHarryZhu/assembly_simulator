@@ -21,6 +21,10 @@ data declaration plus heap blocks and other written ranges.
 - There is no assemble button: run controls go through `handle.control`, which assembles first (with
   the spinner) when the code changed. Slow actions show the shared `.spinner` from `theme.css`.
 - The editor's tab width and indent unit are 4 spaces.
+- Every editor feature that needs to know what a word is (pink label references, section bands, label
+  suggestions, modifier-click) uses the one line scan `scanLine` in `editor.ts`, which reads identifiers
+  the way the assembler does (`.L1`, `a$b`). Labels and macros come from the shared `sourceIndex` state
+  field, rebuilt once per document change; never rescan the document on hover, scroll or selection.
 - Modifier-click (⌘ on macOS, Ctrl elsewhere) is handled in `editor.ts`, not by the browser's follow-link
   behaviour: a mnemonic opens its statement in the instruction set tab, a label reference or macro call
   jumps to its definition. While the modifier is held over a target, `editor.ts` underlines it and shows

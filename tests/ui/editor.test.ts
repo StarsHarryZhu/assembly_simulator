@@ -1,23 +1,59 @@
-/** Editor helpers that work on EditorState alone: label scan, section directives, suggestions. */
+/** Editor helpers that work on EditorState alone: line scan, source index, section directives, suggestions, navigation. */
 import { CompletionContext, insertBracket, type CompletionResult } from '@codemirror/autocomplete'
 import { EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import { mips } from '../../src/isa/mips'
 import { getIndentUnit } from '@codemirror/language'
-import { completer, editorExtensions, flushSectionsOnInput, labelsField, navigationTarget, scanLine } from '../../src/ui/ide/editor'
+import { completer, editorExtensions, flushSectionsOnInput, navigationTarget, scanLine, sourceIndex } from '../../src/ui/ide/editor'
 
 const sections = new Set(mips.language.sections)
 
 describe('scanLine', () => {
-  it('finds definitions, operand identifiers and section directives', () => {
+  const words = (text: string, role: string) => scanLine(text, '#', sections).pieces.filter((p) => p.role === role).map((p) => p.text)
+
+  it('finds definitions, the head, operand identifiers and section directives', () => {
     expect(scanLine('loop: beq $t0, $zero, done   # done later', '#', sections)).toEqual({
-      defs: ['loop'],
-      refs: [{ from: 22, to: 26, name: 'done' }],
+      pieces: [
+        { text: 'loop', from: 0, to: 4, role: 'label' },
+        { text: 'beq', from: 6, to: 9, role: 'head' },
+        { text: '$t0', from: 10, to: 13, role: 'ref' },
+        { text: '$zero', from: 15, to: 20, role: 'ref' },
+        { text: 'done', from: 22, to: 26, role: 'ref' },
+      ],
       section: false,
     })
-    expect(scanLine('msg: .asciiz "a: b, c"', '#', sections).refs).toEqual([])
+    expect(words('msg: .asciiz "a: b, c"', 'ref')).toEqual([])
     expect(scanLine('  .text 0x00400000', '#', sections).section).toBe(true)
-    expect(scanLine('        la $a0, msg+4', '#', sections).refs.map((r) => r.name)).toEqual(['msg'])
+    expect(words('        la $a0, msg+4', 'ref')).toEqual(['$a0', 'msg'])
+  })
+
+  it('reads label names the way the assembler does', () => {
+    expect(words('.L1: j .L1', 'label')).toEqual(['.L1'])
+    expect(words('.L1: j .L1', 'ref')).toEqual(['.L1'])
+    expect(words('a$b: b a$b', 'ref')).toEqual(['a$b'])
+    expect(scanLine('.L1: nop', '#', sections).section).toBe(false)
+  })
+})
+
+describe('sourceIndex', () => {
+  const index = (doc: string) => sourceIndex(EditorState.create({ doc, extensions: editorExtensions(mips) }))
+
+  it('keeps the first label of a line, as the assembler does, and macros', () => {
+    const i = index('a: b: nop\n.macro twice(%r)\n    add %r, %r, %r\n.end_macro\n.L1:\n')
+    expect([...i.labels]).toEqual([
+      ['a', { line: 1, col: 0 }],
+      ['.L1', { line: 5, col: 0 }],
+    ])
+    expect([...i.macros]).toEqual([['twice', { line: 2, col: 7 }]])
+  })
+
+  it('is built once per document change, not per lookup', () => {
+    const state = EditorState.create({ doc: 'x: nop\n', extensions: editorExtensions(mips) })
+    expect(sourceIndex(state)).toBe(sourceIndex(state))
+    const next = state.update({ selection: { anchor: 1 } }).state
+    expect(sourceIndex(next)).toBe(sourceIndex(state))
+    const edited = state.update({ changes: { from: 0, insert: 'y: nop\n' } }).state
+    expect([...sourceIndex(edited).labels.keys()]).toEqual(['y', 'x'])
   })
 })
 
@@ -73,10 +109,9 @@ describe('section directives', () => {
 })
 
 describe('suggestions', () => {
-  const labels = labelsField('#', sections)
-  const complete = completer(mips, labels)
+  const complete = completer(mips)
   const at = (doc: string) => {
-    const state = EditorState.create({ doc, extensions: [labels] })
+    const state = EditorState.create({ doc, extensions: editorExtensions(mips) })
     return complete(new CompletionContext(state, doc.length, false)) as CompletionResult | null
   }
 
@@ -85,6 +120,7 @@ describe('suggestions', () => {
     const r = at('main:\nloop:\n        beq $t0, $t1, l')!
     expect(r.options.map((o) => o.label)).toEqual(['main', 'loop'])
     expect(r.options[0]!.type).toBe('label')
+    expect(at('.L1: nop\n    j .L')!.options.map((o) => o.label)).toEqual(['.L1'])
   })
 
   it('offers registers after $ and nothing inside comments', () => {
