@@ -24,7 +24,7 @@ import { bitsFromDouble, bitsFromFloat, doubleFromBits, floatFromBits, hex8 } fr
 import { PagedMemory } from '../../core/memory'
 import { decodeFields, findDef } from './encoding'
 import type { Cpu, Decoded, InstrDef } from './instructions/types'
-import { KTEXT_BASE, TEXT_BASE } from './assembler'
+import { HEAP_LIMIT, KTEXT_BASE, memoryRegion, TEXT_BASE } from './assembler'
 import { C0_BY_NUMBER, C0_CAUSE, C0_EPC, C0_STATUS, C0_VADDR, F0, FCC0, GP, HI, LO, REGISTER_COUNT, SP } from './registers'
 import { JavaRandom, runSyscall } from './syscalls'
 
@@ -101,17 +101,7 @@ class StepLog {
   }
 }
 
-type Region = 'text' | 'data' | 'ktext' | 'kdata' | 'mmio' | null
-
-function region(a: number): Region {
-  a >>>= 0
-  if (a >= 0x00400000 && a < 0x10000000) return 'text'
-  if (a >= 0x10000000 && a < 0x80000000) return 'data'
-  if (a >= 0x80000000 && a < 0x90000000) return 'ktext'
-  if (a >= 0x90000000 && a < 0xffff0000) return 'kdata'
-  if (a >= 0xffff0000) return 'mmio'
-  return null
-}
+const region = memoryRegion
 
 export class MipsMachine implements Machine, Cpu {
   readonly program: Program
@@ -151,7 +141,8 @@ export class MipsMachine implements Machine, Cpu {
   heapTop = HEAP_BASE
   private blocks: { addr: number; size: number; index: number }[] = []
   readonly randoms = new Map<number, JavaRandom>()
-  readonly openFiles = new Map<number, { name: string; data: Uint8Array; length: number; pos: number; write: boolean }>()
+  /** Open descriptors. `failed`: a read-open of a missing file, which keeps its descriptor as in MARS. */
+  readonly openFiles = new Map<number, { name: string; data: Uint8Array; length: number; pos: number; write: boolean; failed?: boolean }>()
 
   constructor(program: Program, env: Environment) {
     this.program = program
@@ -391,7 +382,7 @@ export class MipsMachine implements Machine, Cpu {
       const size = log.memSize[i]!
       const old = log.memOld[i]!
       for (let j = 0; j < size; j++) this.mem.setByte(a + j, old >>> (8 * j))
-      for (let w = a & ~3; w < a + size; w += 4) {
+      for (let w = (a & ~3) >>> 0; w < a + size; w += 4) {
         const n = (this.written.get(w >>> 0) ?? 1) - 1
         if (n <= 0) this.written.delete(w >>> 0)
         else this.written.set(w >>> 0, n)
@@ -525,8 +516,12 @@ export class MipsMachine implements Machine, Cpu {
   single(n: number): number {
     return floatFromBits(this.fbits(n))
   }
+  /**
+   * A computed result. MARS stores it with Java's Float.floatToIntBits / Double.doubleToLongBits, which
+   * write every NaN as the one canonical pattern, whatever NaN the host arithmetic produced.
+   */
   setSingle(n: number, value: number): void {
-    this.setFbits(n, bitsFromFloat(value))
+    this.setFbits(n, Number.isNaN(value) ? 0x7fc00000 : bitsFromFloat(value))
   }
   double(n: number): number {
     const low = this.fbits(n)
@@ -534,7 +529,7 @@ export class MipsMachine implements Machine, Cpu {
     return doubleFromBits(low, high)
   }
   setDouble(n: number, value: number): void {
-    const [low, high] = bitsFromDouble(value)
+    const [low, high] = Number.isNaN(value) ? [0, 0x7ff80000] : bitsFromDouble(value)
     this.setFbits(n, low)
     this.setFbits(n + 1, high)
   }
@@ -570,7 +565,10 @@ export class MipsMachine implements Machine, Cpu {
   }
 
   private checkLoad(a: number): void {
-    if (region(a) == null) throw new MipsError('addr-range', L(`地址越界：${hex8(a)}（这里没有可用的内存）`, `Address out of range: ${hex8(a)} (no memory there)`), CAUSE.addressLoad, a)
+    const r = region(a)
+    if (r == null) throw new MipsError('addr-range', L(`地址越界：${hex8(a)}（这里没有可用的内存）`, `Address out of range: ${hex8(a)} (no memory there)`), CAUSE.addressLoad, a)
+    // MARS keeps code out of data memory: a load from either text segment is an address error.
+    if (r === 'text' || r === 'ktext') throw new MipsError('text-read', L(`不能直接读代码段：${hex8(a)}`, `Cannot read directly from the text segment: ${hex8(a)}`), CAUSE.addressLoad, a)
   }
   private checkStore(a: number, size: number): void {
     const r = region(a)
@@ -580,7 +578,7 @@ export class MipsMachine implements Machine, Cpu {
     log.memAddr.push(a)
     log.memSize.push(size)
     log.memOld.push(size === 4 ? this.mem.getWord(a) : size === 2 ? this.mem.getHalf(a) : this.mem.getByte(a))
-    for (let w = a & ~3; w < a + size; w += 4) this.written.set(w >>> 0, (this.written.get(w >>> 0) ?? 0) + 1)
+    for (let w = (a & ~3) >>> 0; w < a + size; w += 4) this.written.set(w >>> 0, (this.written.get(w >>> 0) ?? 0) + 1)
   }
   private misaligned(kind: 'load' | 'store', unit: 'word' | 'halfword' | 'doubleword', a: number): never {
     const what = unit === 'word' ? '4' : unit === 'halfword' ? '2' : '8'
@@ -643,6 +641,10 @@ export class MipsMachine implements Machine, Cpu {
   }
   fault(message: string, code = 'fault'): never {
     throw new MipsError(code, message)
+  }
+  /** A failed system call: a syscall exception (cause 8) that a .ktext handler may catch, as in MARS. */
+  syscallFault(message: string, code: string): never {
+    throw new MipsError(code, message, CAUSE.syscall)
   }
   syscall(): void {
     runSyscall(this)
@@ -725,11 +727,16 @@ export class MipsMachine implements Machine, Cpu {
   }
 
   sbrk(bytes: number): number {
-    if (bytes < 0) this.fault(L(`sbrk 申请的字节数不能是负数（${bytes}）`, `sbrk cannot allocate a negative number of bytes (${bytes})`), 'sbrk-negative')
+    if (bytes < 0) this.syscallFault(L(`sbrk 申请的字节数不能是负数（${bytes}）`, `sbrk cannot allocate a negative number of bytes (${bytes})`), 'sbrk-negative')
     const result = this.heapTop
-    let top = (this.heapTop + bytes) >>> 0
-    if (top % 4 !== 0) top = (top + 4 - (top % 4)) >>> 0
-    this.heapTop = top
+    // The new top is rounded up to a word and must stay below 0x10400000, where MARS's data memory
+    // ends. MARS compares as a signed int, so a request that wraps past 0x7fffffff gets through there
+    // and hands out memory it cannot back; here it fails like any other request that is too big.
+    const end = this.heapTop + bytes
+    const next = end + ((4 - (end % 4)) % 4)
+    if (next >= HEAP_LIMIT)
+      this.syscallFault(L(`sbrk 申请的 ${bytes} 字节超出了可用的堆空间（堆最多到 0x10400000）`, `sbrk request of ${bytes} bytes exceeds the available heap (which ends at 0x10400000)`), 'sbrk-full')
+    this.heapTop = next >>> 0
     if (bytes > 0) this.blocks.push({ addr: result, size: bytes, index: this.blocks.length + 1 })
     return result
   }

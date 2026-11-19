@@ -62,8 +62,9 @@ Done:
 
 - MIPS engine at MARS 4.5 parity: assembler (directives, macros, `.eqv`, `.include`), every basic and
   pseudo form, CPU with exceptions and kernel handlers, all syscalls, undo of up to 2000 steps.
-  Verified against MARS on 38 golden fixtures (31 programs and all 7 examples); about 5 million
-  instructions per second.
+  Verified against MARS on 46 golden fixtures (39 programs and all 7 examples) and by differential
+  runs (about 50k instruction lines, 8k data lines, 2000 random programs, 130 syscall cases, segment
+  and exception edge cases); about 5 million instructions per second.
 - Edit & run tab, instruction set tab, disassembler, Chinese/English switch, light/dark themes,
   layouts from 320 px phones to wide desktops. ⌘/Ctrl-click opens an instruction in the instruction
   set tab and jumps label and macro references to their definition; while the modifier is held, the
@@ -72,8 +73,10 @@ Done:
 Not done / known gaps:
 
 - Not implemented on purpose: MARS tools (MMIO keyboard and display, bitmap display), delayed
-  branching, the compact memory configuration. Instructions inside `.data` are an error here, while
-  MARS silently accepts them.
+  branching, the compact memory configuration.
+- Stricter than MARS on purpose, where MARS silently produces a garbled program: instructions inside
+  `.data`, integers wider than 32 bits, branches beyond 16-bit range, unterminated strings, `.align`
+  above 21, `.eqv` values that use macro parameters, and sbrk requests that wrap past 0x7fffffff.
 - After a language switch, console notes already printed by a running program stay in the old language.
 
 Goals: ARM64 and x86-64 plugins behind the same `IsaPlugin` interface.

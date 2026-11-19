@@ -1,0 +1,13 @@
+{
+ "name": "err-macro-loop",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 10,
+    "col": 0,
+    "message": "Detected a macro expansion loop (recursive reference). "
+   }
+  ]
+ }
+}

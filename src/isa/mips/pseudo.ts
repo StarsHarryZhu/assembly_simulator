@@ -29,6 +29,8 @@ export interface PseudoForm {
   /** One-liner for the calculator, in both languages. */
   desc: Text
   expand: (a: PseudoArgs) => Emit[]
+  /** Set when MARS 4.5 itself cannot assemble this form; the line is then an error here too. */
+  marsCannot?: Text
 }
 
 const AT = 1
@@ -322,6 +324,12 @@ const MEM_WHAT: Record<string, Text> = {
   sc: T('条件存储', 'Store conditional'),
 }
 for (const op of ['lw', 'sw', 'lh', 'sh', 'lb', 'sb', 'lhu', 'lbu', 'lwl', 'swl', 'lwr', 'swr', 'll', 'sc']) memoryForms(op, op, MEM_WHAT[op]!, true)
+// MARS 4.5 stops with an internal error ("expansion contained a pseudo-instruction") on swr with a
+// 16-bit unsigned address, so a program using that form would not run there either.
+forms.find((f) => f.example === 'swr $t1,100')!.marsCannot = T(
+  'MARS 4.5 汇编不了这种写法（它自己会报内部错误）。地址是 32768 到 65535 的常数时，请写成 swr $t1, 32768($zero)。',
+  'MARS 4.5 cannot assemble this form (it stops with an internal error). For a constant address from 32768 to 65535, write swr $t1, 32768($zero).',
+)
 
 /* ---------------------------------------------------------------- unaligned and doubleword helpers */
 

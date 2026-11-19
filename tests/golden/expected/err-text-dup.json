@@ -1,0 +1,13 @@
+{
+ "name": "err-text-dup",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 7,
+    "col": 0,
+    "message": "Duplicate text segment address: 0x00400004 already occupied by /Users/starfield/Documents/projects/assembly_simulator/tests/golden/programs/err-text-dup.asm line 5 (caused by use of .text operand)"
+   }
+  ]
+ }
+}

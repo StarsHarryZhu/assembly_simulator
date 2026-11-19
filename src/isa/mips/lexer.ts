@@ -19,6 +19,33 @@ export type TokKind =
   | 'marg' // %name inside a macro
   | 'bad'
 
+/**
+ * The directives MARS knows. Any other word that starts with a dot (".L1") is an identifier, as in
+ * MARS: it can name a label and be used as an operand.
+ */
+export const DIRECTIVE_NAMES: ReadonlySet<string> = new Set([
+  '.word',
+  '.half',
+  '.byte',
+  '.ascii',
+  '.asciiz',
+  '.space',
+  '.float',
+  '.double',
+  '.align',
+  '.text',
+  '.data',
+  '.ktext',
+  '.kdata',
+  '.globl',
+  '.extern',
+  '.eqv',
+  '.macro',
+  '.end_macro',
+  '.include',
+  '.set',
+])
+
 /** MARS integer classes. */
 export type IntClass = 'i5' | 'i16u' | 'i16' | 'i32'
 
@@ -98,12 +125,11 @@ function unescape(body: string): string {
   for (let i = 0; i < body.length; i++) {
     const ch = body[i]!
     if (ch === '\\' && i + 1 < body.length) {
+      // An unknown escape ("\q", "\101", "\x41") keeps only the character after the backslash, as in MARS.
       const next = body[i + 1]!
-      if (next in ESCAPES) {
-        out += ESCAPES[next]
-        i++
-        continue
-      }
+      out += ESCAPES[next] ?? next
+      i++
+      continue
     }
     out += ch
   }
@@ -129,7 +155,7 @@ function atOperandStart(line: string, i: number): boolean {
   if (prev === ',' || prev === '(') return true
   let k = j
   while (k >= 0 && isIdentChar(line[k]!)) k--
-  return /^\.[A-Za-z_]/.test(line.slice(k + 1, j + 1))
+  return DIRECTIVE_NAMES.has(line.slice(k + 1, j + 1).toLowerCase())
 }
 
 function wordToken(text: string, col: number): Token {
@@ -140,7 +166,7 @@ function wordToken(text: string, col: number): Token {
     if (f >= 0) return { kind: 'freg', text, col, value: f }
     return { kind: 'ident', text, col }
   }
-  if (text[0] === '.' && /^\.[A-Za-z_]/.test(text)) return { kind: 'dir', text: text.toLowerCase(), col }
+  if (text[0] === '.' && DIRECTIVE_NAMES.has(text.toLowerCase())) return { kind: 'dir', text: text.toLowerCase(), col }
   const n = parseInteger(text)
   if (n != null) return { kind: 'int', text, col, value: n, intClass: classifyInt(n) }
   if (REAL.test(text)) return { kind: 'real', text, col, real: Number(text) }
@@ -191,8 +217,13 @@ export function tokenize(line: string): Token[] {
         if (line[j] === '\\') j++
         j++
       }
-      const body = line.slice(i + 1, Math.min(j, n))
-      out.push({ kind: 'str', text: line.slice(i, Math.min(j + 1, n)), col, str: unescape(body) })
+      // Without a closing quote MARS quietly drops the string's last character; here it is an error.
+      if (j >= n) {
+        out.push({ kind: 'bad', text: line.slice(i), col })
+        i = n
+        continue
+      }
+      out.push({ kind: 'str', text: line.slice(i, j + 1), col, str: unescape(line.slice(i + 1, j)) })
       i = j + 1
       continue
     }

@@ -306,14 +306,15 @@ export const DIRECTIVE_REFERENCE: ReferenceTable = {
         dir(
           '.word',
           T('32 位整数', '32-bit words'),
-          T('每个值占 4 字节，可以写整数，也可以写标签（存它的地址）。值:次数 表示重复，比如 0:10 是 10 个 0。自动对齐到 4 字节。', 'Each value takes 4 bytes: an integer, or a label (its address is stored). value:count repeats, so 0:10 is ten zeros. Aligned to 4 bytes automatically.'),
-          'nums: .word 1, -2, 0xff, 0:4',
+          T('每个值占 4 字节，可以写整数，也可以写标签（存它的地址）。自动对齐到 4 字节。', 'Each value takes 4 bytes: an integer, or a label (its address is stored). Aligned to 4 bytes automatically.'),
+          'nums: .word 1, -2, 0xff',
+          T('值:次数 表示重复，比如 .word 0:10 是 10 个 0；这种写法只能单独占满一条 .word，不能和别的值写在一起。', 'value:count repeats a value, so .word 0:10 is ten zeros; it must be the whole argument of the directive, not mixed with other values.'),
         ),
         dir(
           '.half',
           T('16 位整数', '16-bit halfwords'),
           T('每个值占 2 字节，自动对齐到 2 字节。', 'Each value takes 2 bytes, aligned to 2 bytes automatically.'),
-          'h: .half 1000, -1, 0:3',
+          'h: .half 1000, -1',
           T('超出 −32768–32767 时给出警告，只保留低 16 位。', 'A value outside −32768–32767 gives a warning and keeps only its low 16 bits.'),
         ),
         dir(
@@ -324,7 +325,7 @@ export const DIRECTIVE_REFERENCE: ReferenceTable = {
           T('超出 −128–127 时给出警告，只保留低 8 位。', 'A value outside −128–127 gives a warning and keeps only its low 8 bits.'),
         ),
         dir('.float', T('单精度浮点数', 'Floats'), T('每个值占 4 字节，自动对齐到 4 字节。只能写十进制（1.5、-2e3），不能写十六进制。', 'Each value takes 4 bytes, aligned to 4 automatically. Decimal only (1.5, -2e3), never hex.'), 'f: .float 3.14, -1.5e2'),
-        dir('.double', T('双精度浮点数', 'Doubles'), T('每个值占 8 字节，自动对齐到 8 字节。也能用 值:次数 重复。', 'Each value takes 8 bytes, aligned to 8 automatically. value:count repeats here too.'), 'd: .double 2.718281828, 0:2'),
+        dir('.double', T('双精度浮点数', 'Doubles'), T('每个值占 8 字节，自动对齐到 8 字节。也能用 值:次数 重复（同样只能单独写）。', 'Each value takes 8 bytes, aligned to 8 automatically. value:count repeats here too (again only on its own).'), 'd: .double 2.718281828, -0.5'),
         dir('.ascii', T('字符串（不加 \\0）', 'String without \\0'), T('把字符串的字节依次放进内存，结尾不加 \\0。可以写几个字符串；支持 \\n、\\t、\\" 等转义。', 'Stores the string’s bytes with no \\0 at the end. Several strings may follow; escapes such as \\n, \\t and \\" work.'), 's: .ascii "abc"'),
         dir('.asciiz', T('字符串（加 \\0）', 'String with \\0'), T('和 .ascii 一样，但每个字符串后面补一个 \\0。syscall 4 打印的就是这种字符串。', 'Like .ascii, but each string ends with a \\0. This is the kind of string syscall 4 prints.'), 'msg: .asciiz "Hello\\n"'),
         dir(
@@ -346,7 +347,13 @@ export const DIRECTIVE_REFERENCE: ReferenceTable = {
     {
       title: T('符号', 'Symbols'),
       rows: [
-        dir('.globl', T('全局标签', 'Global label'), T('把标签声明成全局的。这里只有一个源文件，所以可以写，但不起作用。', 'Declares a label global. With a single source file here, it is accepted and has no effect.'), '.globl main'),
+        dir(
+          '.globl',
+          T('全局标签', 'Global label'),
+          T('把标签声明成全局的。这里只有一个源文件，所以可以写，但不起作用。', 'Declares a label global. With a single source file here, it is accepted and has no effect.'),
+          '.globl main\nmain:',
+          T('声明的标签必须在程序里定义过，否则和 MARS 一样报错。', 'The label must be defined somewhere in the program; otherwise it is an error, as in MARS.'),
+        ),
         dir(
           '.extern',
           T('外部变量', 'External variable'),

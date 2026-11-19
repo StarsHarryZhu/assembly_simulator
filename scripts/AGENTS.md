@@ -22,4 +22,5 @@ Java helper that lists the instruction forms MARS knows, used when checking our 
 
 ## 4. Progress
 
-Done: fixtures for 31 test programs and 7 examples. Not done: nothing outstanding.
+Done: fixtures for 39 test programs and 7 examples; errors inside macro expansions ("line 6->2")
+are read at the calling line. Not done: nothing outstanding.

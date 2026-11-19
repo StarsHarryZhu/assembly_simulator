@@ -1,0 +1,33 @@
+{
+ "name": "err-data-addr",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 4,
+    "col": 14,
+    "message": "\"272629760\" is not a valid data segment address"
+   },
+   {
+    "line": 6,
+    "col": 11,
+    "message": "\"2143289340\" is not a valid data segment address"
+   },
+   {
+    "line": 8,
+    "col": 13,
+    "message": "\"4194304\" is not a valid data segment address"
+   },
+   {
+    "line": 8,
+    "col": 13,
+    "message": "\"4194305\" is not a valid data segment address"
+   },
+   {
+    "line": 8,
+    "col": 13,
+    "message": "\"4194306\" is not a valid data segment address"
+   }
+  ]
+ }
+}

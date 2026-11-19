@@ -103,30 +103,108 @@ function special(value: number): string | null {
   return null
 }
 
-function splitExponential(s: string): { digits: string; exp: number } {
-  const m = /^-?(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(s)!
-  return { digits: (m[1]! + (m[2] ?? '')).replace(/0+$/, '') || '0', exp: Number(m[3]) }
+/* Exact digit choice. Values are compared as fractions of BigInts, so no rounding can creep in. */
+
+interface Ratio {
+  n: bigint
+  d: bigint
+}
+
+const view = new DataView(new ArrayBuffer(8))
+
+/** A finite double >= 0 as an exact fraction. */
+function ratioOf(v: number): Ratio {
+  view.setFloat64(0, v)
+  const hi = view.getUint32(0)
+  const biased = (hi >>> 20) & 0x7ff
+  let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(view.getUint32(4))
+  if (biased) m |= 1n << 52n
+  const e = (biased || 1) - 1075
+  return e >= 0 ? { n: m << BigInt(e), d: 1n } : { n: m, d: 1n << BigInt(-e) }
+}
+
+const cmp = (a: Ratio, b: Ratio) => {
+  const x = a.n * b.d - b.n * a.d
+  return x < 0n ? -1 : x > 0n ? 1 : 0
+}
+const mid = (a: Ratio, b: Ratio): Ratio => ({ n: a.n * b.d + b.n * a.d, d: 2n * a.d * b.d })
+const pow10 = (k: number): Ratio => (k >= 0 ? { n: 10n ** BigInt(k), d: 1n } : { n: 1n, d: 10n ** BigInt(-k) })
+
+/** The neighbouring values of a positive finite float or double, and whether its significand is even. */
+function neighbours(v: number, single: boolean): { down: number; up: number; even: boolean } {
+  if (single) {
+    view.setFloat32(0, v)
+    const bits = view.getUint32(0)
+    view.setUint32(0, bits - 1)
+    const down = view.getFloat32(0)
+    view.setUint32(0, bits + 1)
+    return { down, up: view.getFloat32(0), even: (bits & 1) === 0 }
+  }
+  view.setFloat64(0, v)
+  const bits = view.getBigUint64(0)
+  view.setBigUint64(0, bits - 1n)
+  const down = view.getFloat64(0)
+  view.setBigUint64(0, bits + 1n)
+  return { down, up: view.getFloat64(0), even: (bits & 1n) === 0n }
+}
+
+/**
+ * The digits Java's Float.toString / Double.toString (JDK 19 and later, the versions MARS runs on today)
+ * choose for a positive finite value: among the decimals that round back to it, those with the fewest
+ * digits; of these the closest, a tie going to the even last digit. When one digit is enough, two-digit
+ * decimals compete as well, which is why the smallest float prints as 1.4E-45 rather than 1.0E-45.
+ */
+function javaDigits(v: number, single: boolean): { digits: string; exp: number } {
+  const x = ratioOf(v)
+  const { down, up, even } = neighbours(v, single)
+  const below = ratioOf(down)
+  const lo = mid(x, below)
+  // Past the largest finite value the next step is as wide as the last one.
+  const hi = Number.isFinite(up) ? mid(x, ratioOf(up)) : { n: 3n * x.n * below.d - below.n * x.d, d: 2n * x.d * below.d }
+  const rounds = (c: Ratio) => {
+    const a = cmp(c, lo)
+    const b = cmp(c, hi)
+    return even ? a >= 0 && b <= 0 : a > 0 && b < 0
+  }
+  let e = Math.floor(Math.log10(v))
+  while (cmp(pow10(e), x) > 0) e--
+  while (cmp(pow10(e + 1), x) <= 0) e++
+  // The p-digit decimals just below and above v, keeping those that round back to it.
+  const pick = (p: number): { c: bigint; k: number } | null => {
+    const k = e - p + 1
+    const s = pow10(k)
+    const qn = x.n * s.d
+    const qd = x.d * s.n
+    const c0 = qn / qd
+    const ok = [c0, c0 + 1n].filter((c) => c > 0n && rounds({ n: c * s.n, d: s.d }))
+    if (!ok.length) return null
+    if (ok.length === 1) return { c: ok[0]!, k }
+    const side = 2n * qn - (2n * c0 + 1n) * qd // < 0: c0 is closer
+    return { c: side < 0n || (side === 0n && c0 % 2n === 0n) ? c0 : c0 + 1n, k }
+  }
+  for (let p = 1; p <= 17; p++) {
+    const found = pick(p)
+    if (!found) continue
+    const { c, k } = p === 1 ? (pick(2) ?? found) : found
+    const s = c.toString()
+    return { digits: s.replace(/0+$/, '') || '0', exp: k + s.length - 1 }
+  }
+  throw new Error(`no decimal rounds to ${v}`)
+}
+
+function javaString(value: number, single: boolean): string {
+  const s = special(value)
+  if (s) return s
+  const { digits, exp } = javaDigits(Math.abs(value), single)
+  return javaFormat(value, digits, exp)
 }
 
 /** Java Double.toString. */
 export function javaDouble(value: number): string {
-  const s = special(value)
-  if (s) return s
-  const { digits, exp } = splitExponential(value.toExponential())
-  return javaFormat(value, digits, exp)
+  return javaString(value, false)
 }
 
 /** Java Float.toString, for a value that is exactly a float32. */
 export function javaFloat(value: number): string {
-  const s = special(value)
-  if (s) return s
-  for (let p = 1; p <= 9; p++) {
-    const e = value.toExponential(p - 1)
-    if (Math.fround(Number(e)) === value) {
-      const { digits, exp } = splitExponential(e)
-      return javaFormat(value, digits, exp)
-    }
-  }
-  const { digits, exp } = splitExponential(value.toExponential(8))
-  return javaFormat(value, digits, exp)
+  return javaString(value, true)
 }

@@ -39,13 +39,17 @@ const ASM_CODES: [RegExp, string][] = [
   [/is an out-of-range value/, 'float-range'],
   [/Error reading include file/, 'include'],
   [/Macro started but not ended/, 'macro-unterminated'],
+  [/Invalid address for text segment/, 'bad-text-addr'],
+  [/Duplicate text segment address/, 'duplicate-text-addr'],
+  [/is not a valid data segment address/, 'bad-data-addr'],
+  [/Detected a macro expansion loop/, 'macro-loop'],
 ]
 
 /** MARS runtime messages -> our halt codes. */
 const RUN_CODES: [RegExp, string][] = [
   [/arithmetic overflow/, 'overflow'],
   [/address out of range/, 'addr-range'],
-  [/fetch address not aligned/, 'load-align'],
+  [/fetch address not aligned|address not aligned on doubleword boundary/, 'load-align'],
   [/store address not aligned/, 'store-align'],
   [/^trap$/, 'trap'],
   [/break instruction executed/, 'break'],
@@ -56,6 +60,9 @@ const RUN_CODES: [RegExp, string][] = [
   [/invalid float input|invalid double input/, 'input-float'],
   [/must be even-numbered/, 'fp-even'],
   [/Upper bound of range cannot be negative/, 'random-bound'],
+  [/Cannot read directly from text segment|to read from kernel text segment/, 'text-read'],
+  [/exceeds available heap storage/, 'sbrk-full'],
+  [/is negative heap amount/, 'sbrk-negative'],
 ]
 
 function codeOf(table: [RegExp, string][], message: string): string {

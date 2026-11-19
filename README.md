@@ -48,10 +48,12 @@ Enter one machine word per line (`0x` hexadecimal, `0b` binary, 32 bits of 0 and
 - Directives: `.text` `.data` `.ktext` `.kdata` `.word` `.half` `.byte` `.ascii` `.asciiz` `.space` `.align` `.float` `.double` `.globl` `.extern` `.eqv` `.macro`/`.end_macro` `.include` `.set`.
 - **All 39 syscalls** (1–17, 30–36, 40–44, 50–59): input waits for you to type in the terminal; 31 and 33 really make a sound; 32 really waits; 40–44 use the same random-number algorithm as MARS, so the same seed gives the same numbers; 50–59 open dialogs.
 - Exceptions: overflow, traps, misaligned and out-of-range addresses, `break`, and so on. With a `.ktext` handler the program jumps to `0x80000180`; without one it stops with the same message as MARS.
-- Memory layout matches MARS's default configuration: text at `0x00400000`, data at `0x10010000`, heap at `0x10040000`, `$gp = 0x10008000`, `$sp = 0x7fffeffc`, little-endian, no delayed branching.
+- Memory layout matches MARS's default configuration: text at `0x00400000`, data at `0x10010000`, heap at `0x10040000`, `$gp = 0x10008000`, `$sp = 0x7fffeffc`, little-endian, no delayed branching. As in MARS, each segment has 4 MB behind it, and reading the text segment as data is an address error.
 - Speed: about 5 million instructions per second.
 
-**Deliberately not implemented**: MARS's tools (MMIO keyboard and display, bitmap display, and so on), delayed branching, and the compact memory configuration. Instructions inside `.data` are an error here, while MARS silently accepts them.
+**Deliberately not implemented**: MARS's tools (MMIO keyboard and display, bitmap display, and so on), delayed branching, and the compact memory configuration.
+
+**Deliberately stricter than MARS**: where MARS silently produces a broken program, this is an error instead: instructions inside `.data`, integers wider than 32 bits, branches out of 16-bit range, unterminated strings, `.align` above 21, a `.eqv` value that uses a macro parameter, and an `sbrk` request that wraps past `0x7fffffff`.
 
 **ARM64 and x86-64**: both appear in the architecture selector and their interfaces exist, but they are not implemented.
 

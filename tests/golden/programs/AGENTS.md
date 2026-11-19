@@ -12,7 +12,7 @@ the error text and position are compared too.
 - A `# golden:` header may set `norun`, `steps=N` or `mem=A-B` (see `scripts/mars-golden.mjs`).
 - A program that reads input has a `<name>.in` file next to it; examples keep theirs here as
   `example-<name>.in`.
-- Output must be ASCII so MARS and our engine print the same bytes.
+- Non-ASCII output is fine: like MARS, strings print one character per byte (Latin-1).
 
 ## 3. Contents
 
@@ -21,4 +21,5 @@ the error text and position are compared too.
 
 ## 4. Progress
 
-Done: 31 programs. Not done: nothing outstanding.
+Done: 39 programs (`handler-faults` and `parity-details` hold the edge cases found by
+differential testing). Not done: nothing outstanding.
