@@ -34,7 +34,6 @@ import {
   highlightActiveLine,
   highlightActiveLineGutter,
   highlightSpecialChars,
-  hoverTooltip,
   keymap,
   lineNumbers,
   ViewPlugin,
@@ -320,38 +319,109 @@ export function navigationTarget(state: EditorState, pos: number, isa: IsaPlugin
   return label ? { kind: 'definition', what: 'label', name: hit.text, ...label, ...at } : null
 }
 
-/** "⌘" on a Mac, "Ctrl" everywhere else; used by the click handler and the hover hint. */
-export function modifierName(): string {
-  if (typeof navigator === 'undefined') return 'Ctrl'
-  return /Mac|iPhone|iPad|iPod/.test(`${navigator.platform ?? ''} ${navigator.userAgent}`) ? '⌘' : 'Ctrl'
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /Mac|iPhone|iPad|iPod/.test(`${navigator.platform ?? ''} ${navigator.userAgent}`)
 }
 
-function hintText(target: NavigationTarget): string {
-  const mod = modifierName()
-  const en = getLocale() === 'en'
-  if (target.kind === 'instruction') return en ? `${mod}-click: open in the instruction set` : `${mod} 点击：在指令集中打开`
-  if (target.what === 'macro') return en ? `${mod}-click: go to the macro definition` : `${mod} 点击：跳到宏定义`
-  return en ? `${mod}-click: go to the label definition` : `${mod} 点击：跳到标签定义`
+/** The modifier VS Code uses for Go to Definition on this platform. */
+function linkModifier(event: { metaKey: boolean; ctrlKey: boolean }): boolean {
+  return isMacPlatform() ? event.metaKey : event.ctrlKey
 }
 
-function navHint(isa: IsaPlugin): Extension {
-  return hoverTooltip(
-    (view, pos) => {
-      const target = navigationTarget(view.state, pos, isa)
-      if (!target) return null
-      return {
-        pos: target.from,
-        end: target.to,
-        above: true,
-        create: () => {
-          const dom = document.createElement('div')
-          dom.className = 'cm-nav-tip'
-          dom.textContent = hintText(target)
-          return { dom }
-        },
+const setNavLink = StateEffect.define<{ from: number; to: number } | null>()
+
+const navLinkField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(links, tr) {
+    links = links.map(tr.changes)
+    for (const effect of tr.effects) {
+      if (!effect.is(setNavLink)) continue
+      links = effect.value ? Decoration.set([Decoration.mark({ class: 'cm-nav-link' }).range(effect.value.from, effect.value.to)]) : Decoration.none
+    }
+    return links
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
+
+function linkedSpan(view: EditorView): { from: number; to: number } | null {
+  let link: { from: number; to: number } | null = null
+  view.state.field(navLinkField).between(0, view.state.doc.length, (from, to) => {
+    link = { from, to }
+    return false
+  })
+  return link
+}
+
+/**
+ * VS Code-style link feedback. Holding the Go to Definition modifier underlines the clickable token under the
+ * pointer and turns the cursor into a hand; releasing it (or leaving the token) restores the normal text cursor.
+ */
+function navigationFeedback(isa: IsaPlugin): Extension {
+  const mac = isMacPlatform()
+  return ViewPlugin.fromClass(
+    class {
+      private pointer: { x: number; y: number } | null = null
+      private active = false
+      private readonly win: Window | null
+      private readonly onMove = (event: MouseEvent) => {
+        if (event.buttons !== 0) return
+        this.pointer = { x: event.clientX, y: event.clientY }
+        this.active = linkModifier(event)
+        this.refresh()
+      }
+      private readonly onLeave = () => {
+        this.active = false
+        this.pointer = null
+        this.clear()
+      }
+      private readonly onKey = (event: KeyboardEvent) => {
+        if (event.key !== (mac ? 'Meta' : 'Control')) return
+        this.active = event.type === 'keydown'
+        this.refresh()
+      }
+      private readonly onBlur = () => {
+        this.active = false
+        this.refresh()
+      }
+      private readonly onScroll = () => this.refresh()
+
+      constructor(private readonly view: EditorView) {
+        this.win = view.dom.ownerDocument.defaultView
+        view.dom.addEventListener('mousemove', this.onMove)
+        view.dom.addEventListener('mouseleave', this.onLeave)
+        view.scrollDOM.addEventListener('scroll', this.onScroll, { passive: true })
+        this.win?.addEventListener('keydown', this.onKey, true)
+        this.win?.addEventListener('keyup', this.onKey, true)
+        this.win?.addEventListener('blur', this.onBlur)
+      }
+
+      destroy() {
+        this.view.dom.removeEventListener('mousemove', this.onMove)
+        this.view.dom.removeEventListener('mouseleave', this.onLeave)
+        this.view.scrollDOM.removeEventListener('scroll', this.onScroll)
+        this.win?.removeEventListener('keydown', this.onKey, true)
+        this.win?.removeEventListener('keyup', this.onKey, true)
+        this.win?.removeEventListener('blur', this.onBlur)
+      }
+
+      private refresh() {
+        if (!this.active || !this.pointer) {
+          this.clear()
+          return
+        }
+        const pos = this.view.posAtCoords(this.pointer)
+        const target = pos == null ? null : navigationTarget(this.view.state, pos, isa)
+        const next = target ? { from: target.from, to: target.to } : null
+        const current = linkedSpan(this.view)
+        if (next?.from === current?.from && next?.to === current?.to) return
+        this.view.dispatch({ effects: setNavLink.of(next) })
+      }
+
+      private clear() {
+        if (linkedSpan(this.view)) this.view.dispatch({ effects: setNavLink.of(null) })
       }
     },
-    { hoverTime: 350 },
   )
 }
 
@@ -362,24 +432,26 @@ export interface NavigationHandlers {
   onDefinition(line: number, col: number): void
 }
 
-/** Modifier-click navigation and its hover hint. */
+/** Modifier-click navigation with VS Code-style underline and pointer feedback. */
 export function editorNavigation(isa: IsaPlugin, handlers: NavigationHandlers): Extension[] {
   return [
+    navLinkField,
+    navigationFeedback(isa),
     EditorView.domEventHandlers({
       mousedown(event, view) {
         if (event.button !== 0 || event.altKey || event.shiftKey) return false
-        if (modifierName() === '⌘' ? !event.metaKey : !event.ctrlKey) return false
+        if (!linkModifier(event)) return false
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
         if (pos == null) return false
         const target = navigationTarget(view.state, pos, isa)
         if (!target) return false
         event.preventDefault()
+        view.dispatch({ effects: setNavLink.of(null) })
         if (target.kind === 'instruction') handlers.onInstruction(target.line)
         else handlers.onDefinition(target.line, target.col)
         return true
       },
     }),
-    navHint(isa),
   ]
 }
 
@@ -560,7 +632,7 @@ const markField = StateField.define<DecorationSet>({
 const theme = EditorView.theme({
   '&': { height: '100%', fontSize: '13px', backgroundColor: 'var(--surface-1)', color: 'var(--text-primary)' },
   '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.55' },
-  '.cm-content': { caretColor: 'var(--accent)' },
+  '.cm-content': { caretColor: 'var(--accent)', cursor: 'text' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
   '&.cm-focused': { outline: 'none' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
@@ -577,7 +649,12 @@ const theme = EditorView.theme({
   '.cm-label-ref': { color: 'var(--series-6)' },
   '.cm-section-line': { backgroundColor: 'var(--bg-section)' },
   '.cm-tooltip': { backgroundColor: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text-primary)' },
-  '.cm-nav-tip': { padding: '3px 8px', fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' },
+  '.cm-nav-link, .cm-nav-link *': {
+    color: 'var(--nav-link) !important',
+    textDecoration: 'underline',
+    textUnderlinePosition: 'under',
+    cursor: 'pointer',
+  },
   // Suggestion list in the style of VS Code's suggest widget.
   '.cm-tooltip.cm-tooltip-autocomplete': {
     backgroundColor: 'var(--suggest-bg)',

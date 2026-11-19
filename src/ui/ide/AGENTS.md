@@ -23,7 +23,9 @@ data declaration plus heap blocks and other written ranges.
 - The editor's tab width and indent unit are 4 spaces.
 - Modifier-click (⌘ on macOS, Ctrl elsewhere) is handled in `editor.ts`, not by the browser's follow-link
   behaviour: a mnemonic opens its statement in the instruction set tab, a label reference or macro call
-  jumps to its definition. Included files have no editor, so their labels cannot be jumped to.
+  jumps to its definition. While the modifier is held over a target, `editor.ts` underlines it and shows
+  a hand cursor, as VS Code does, and clears the decoration when the modifier is released or the pointer
+  leaves the token. Included files have no editor, so their labels cannot be jumped to.
 - Never use the browser's `confirm()`/`alert()`: embedded browsers may drop them. Ask with
   `ConfirmDialog.vue`.
 
@@ -33,7 +35,7 @@ data declaration plus heap blocks and other written ranges.
   forwards the editor's `open-instruction` event to the app.
 - `useSession.ts` — creates the session, version counter, busy state, saved code and settings, sound.
 - `editor.ts` — CodeMirror language, label and section marks, VS Code-style suggestions, auto-closed
-  quotes and brackets, breakpoints, modifier-click navigation and its hover hint.
+  quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback.
 - `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line);
   emits `open-instruction` for a modifier-clicked mnemonic.
 - `Toolbar.vue` — new, open, download, examples, run controls, interval, step size (line by default), status.

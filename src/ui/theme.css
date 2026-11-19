@@ -10,6 +10,8 @@
   --text-secondary: #464e5c;
   --text-muted: #6a7280;
   --accent: #2563eb;
+  /* Active Go to Definition link, after VS Code's editorLink.activeForeground. */
+  --nav-link: #006ab1;
   --success: #15803d;
   --warning: #b45309;
   --danger: #c62828;
@@ -58,6 +60,7 @@
     --text-secondary: #b6bdc9;
     --text-muted: #8a919e;
     --accent: #5b9cff;
+    --nav-link: #4e94ce;
     --success: #4ade80;
     --warning: #fbbf24;
     --danger: #f87171;
@@ -101,6 +104,7 @@
   --text-secondary: #b6bdc9;
   --text-muted: #8a919e;
   --accent: #5b9cff;
+  --nav-link: #4e94ce;
   --success: #4ade80;
   --warning: #fbbf24;
   --danger: #f87171;

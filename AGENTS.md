@@ -63,7 +63,8 @@ Done:
   instructions per second.
 - Edit & run tab, instruction set tab, disassembler, Chinese/English switch, light/dark themes,
   layouts from 320 px phones to wide desktops. ⌘/Ctrl-click opens an instruction in the instruction
-  set tab and jumps label and macro references to their definition, with a hover hint.
+  set tab and jumps label and macro references to their definition; while the modifier is held, the
+  target underlines and shows a hand cursor, as in VS Code.
 
 Not done / known gaps:
 
