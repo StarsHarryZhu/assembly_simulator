@@ -2,7 +2,7 @@
 
 在浏览器里写、汇编、单步运行 MIPS 汇编的教学工具。指令集和行为对齐 **MARS 4.5**，但引擎是我们自己写的，网页里不包含任何 MARS 的代码。构建结果是一个独立的 `index.html`，放到 GitHub Pages 上能用，下载到本地双击也能用，不需要联网。
 
-在线使用：<https://starsharryzhu.github.io/assembly_simulator/>（源码在 [GitHub](https://github.com/StarsHarryZhu/assembly_simulator)）。
+在线使用：<https://starsharryzhu.github.io/assembly_simulator/>（源码在 [GitHub](https://github.com/StarsHarryZhu/assembly_simulator)，以 [MIT](LICENSE) 许可证开源）。
 
 界面支持**中文和英文**：第一次打开时跟随系统语言（不是中文也不是英文时用英文），之后可以在右上角切换，会记住你的选择。也可以切换浅色和深色主题。
 
@@ -104,3 +104,7 @@ MARS 只用来生成标准答案，网站本身只运行我们自己的引擎。
 | `scripts` | 生成标准答案的脚本 |
 
 每个文件夹里都有一份英文的 `AGENTS.md`，说明这个文件夹负责什么、有哪些约束、每个文件做什么、进度如何。
+
+## 许可证
+
+代码以 [MIT 许可证](LICENSE) 开源，版权 © 2026 Starfield：可以自由使用、修改、再分发，保留版权声明即可；代码按「原样」提供，不带任何担保。

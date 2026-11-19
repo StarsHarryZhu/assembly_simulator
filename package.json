@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Browser-based assembly IDE and simulator: MIPS32 with the full MARS 4.5 instruction set.",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",

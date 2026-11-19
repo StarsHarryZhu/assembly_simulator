@@ -33,6 +33,7 @@ produce the golden test fixtures. Interfaces for other ISAs (ARM, x86-64) exist 
 - Never use the browser's `confirm()`/`alert()`/`prompt()`: embedded browsers may drop them silently.
 - Colours come from the CSS tokens in `src/ui/theme.css`; both themes must stay legible.
 - Deployment is the owner's job: `.github/workflows/pages.yml` builds and publishes on push to `main`.
+- Open source under the MIT license (`LICENSE`, © 2026 Starfield); keep the copyright notice intact.
 - Every folder (except dot folders, `node_modules`, `dist`) keeps an AGENTS.md with these four
   sections; `tests/agents-md.test.ts` enforces it. Update a folder's AGENTS.md in the same change.
 - `npm test`, `npm run typecheck` and `npm run build` must all pass before a change is done.
@@ -45,6 +46,7 @@ produce the golden test fixtures. Interfaces for other ISAs (ARM, x86-64) exist 
 - `vite.config.ts` — Vue and single-file plugins, relative base, Vitest settings.
 - `tsconfig.json` — strict TypeScript settings for sources and tests.
 - `README.md` — Chinese overview for people: features, usage, development, deployment.
+- `LICENSE` — MIT license text; the copyright notice is what makes the license valid.
 - `src` — the application: core contracts, the MIPS engine, and the Vue UI.
 - `tests` — unit tests, golden comparisons against MARS, and the AGENTS.md checker.
 - `scripts` — developer tools; regenerates golden fixtures with MARS.
