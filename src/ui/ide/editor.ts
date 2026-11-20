@@ -592,6 +592,29 @@ export function completer(isa: IsaPlugin) {
     }
   }
   const registers = (): Completion[] => isa.language.registers.map((r) => ({ label: r, type: 'register', detail: regNotes.get(r)?.() ?? '' }))
+  // Named registers can be typed without their prefix: "t0" offers $t0 and writes it in full. Numbered ones
+  // ($4) still need it, so a plain number never turns into a register.
+  const bare = isa.language.registers
+    .map((r) => ({ r, name: r.replace(/^[^\w]+/, '') }))
+    .filter(({ r, name }) => name !== r && /^[A-Za-z]/.test(name))
+  const bareRegisters = (boost: number): Completion[] =>
+    bare.map(({ r, name }) => ({ label: name, displayLabel: r, apply: r, type: 'register', detail: regNotes.get(r)?.() ?? '', boost }))
+  // The matched characters are found in the bare name; shift them past the prefix shown before it.
+  const getMatch = (c: Completion, matched: readonly number[] = []) => matched.map((n) => n + (c.displayLabel ?? c.label).length - c.label.length)
+  // Which operands of each mnemonic take a register, from the instruction forms (in `lw $t1, -100($t2)`
+  // both do; in `j target` none does).
+  const known = new Set(isa.language.registers)
+  const registerSlots = new Map<string, Set<number>>()
+  for (const e of isa.catalog) {
+    const slots = registerSlots.get(e.mnemonic) ?? new Set<number>()
+    e.example
+      .slice(e.mnemonic.length)
+      .split(',')
+      .forEach((operand, at) => {
+        if (operand.match(/[$\w.]+/g)?.some((w) => known.has(w))) slots.add(at)
+      })
+    registerSlots.set(e.mnemonic, slots)
+  }
   // Directives: the title as detail, and the reference row (example, meaning, caveats) as details panel.
   const directiveRows = new Map<string, RefRow>()
   for (const table of isa.references ?? [])
@@ -642,9 +665,18 @@ export function completer(isa: IsaPlugin) {
       info: labelDoc(name, d),
       boost: wants && d.kind === wants ? 10 : 0,
     }))
-  const labels = (state: EditorState, from: number, wants: LabelKind | null): CompletionResult | null => {
+  /**
+   * An operand being typed: the labels, and the registers without their prefix where the operand takes one and
+   * the text could be a register name. Inside `4(` the operand is a base register, so no label kind is wanted.
+   */
+  const operands = (state: EditorState, from: number, before: string, text: string): CompletionResult | null => {
+    const op = operandAt(before)
+    const base = !!op && /\([^)]*$/.test(op.text)
+    const wants = base ? null : wantedKind(op)
     const options = labelOptions(state, wants)
-    return options.length ? { from, options, validFor: /^[\w.$]*$/ } : null
+    const takesRegister = !op || base || (!op.mnemonic.startsWith('.') && (registerSlots.get(op.mnemonic)?.has(op.at) ?? true))
+    if (takesRegister && (!text || /^[A-Za-z]/.test(text))) options.push(...bareRegisters(wants ? 0 : 5))
+    return options.length ? { from, options, validFor: /^[\w.$]*$/, getMatch } : null
   }
 
   return (ctx: CompletionContext): CompletionResult | null => {
@@ -656,12 +688,14 @@ export function completer(isa: IsaPlugin) {
       // Nothing typed yet: open the labels only where the operand takes one (after `la $a0, `, `j `).
       const op = operandAt(before)
       const wants = op && !op.text ? wantedKind(op) : null
-      return wants ? labels(ctx.state, word.from, wants) : null
+      const options = wants ? labelOptions(ctx.state, wants) : []
+      // No validFor: the next letter asks again, so registers typed without "$" can join in.
+      return options.length ? { from: word.from, options } : null
     }
     if (word.text.startsWith('$')) return { from: word.from, options: registers(), validFor: /^\$\w*$/ }
     if (word.text.startsWith('.') && atStatementStart(before)) return { from: word.from, options: directives(), validFor: /^\.\w*$/ }
     if (atStatementStart(before)) return { from: word.from, options: mnemonicOptions(), validFor: /^[\w.]*$/ }
-    if (/^[.A-Za-z_]?[\w.$]*$/.test(word.text)) return labels(ctx.state, word.from, wantedKind(operandAt(before)))
+    if (/^[.A-Za-z_]?[\w.$]*$/.test(word.text)) return operands(ctx.state, word.from, before, word.text)
     return null
   }
 }

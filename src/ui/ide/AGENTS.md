@@ -33,6 +33,9 @@ data declaration plus heap blocks and other written ranges.
 - Label suggestions come from that index: a label in a data section (`language.dataSections`) is data and
   shows its declaration, any other is code and shows its line. Where an operand takes a label
   (`language.labelOperands`), the list opens before anything is typed, with the wanted kind first.
+- Named registers are also suggested without their prefix (`t0` offers `$t0` and writes the `$` in), but
+  only where an operand takes a register according to the instruction forms (inside `4(` always, never
+  in a directive or a jump target) and only for text that starts with a letter, so numbers stay numbers.
 - Modifier-click (⌘ on macOS, Ctrl elsewhere) is handled in `editor.ts`, not by the browser's follow-link
   behaviour: a mnemonic or directive opens its statement in the instruction set tab, a label reference or macro call
   jumps to its definition. While the modifier is held over a target, `editor.ts` underlines it and shows

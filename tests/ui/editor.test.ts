@@ -196,6 +196,42 @@ describe('suggestions', () => {
     expect(at('        add $t')!.options.some((o) => o.label === '$t0')).toBe(true)
     expect(at('        # ad')).toBeNull()
   })
+
+  const registersIn = (r: CompletionResult | null) => (r?.options ?? []).filter((o) => o.type === 'register')
+
+  it('offers named registers without their $, and writes the $ in', () => {
+    const r = typed('    add $t0, $t1, t')!
+    const t2 = r.options.find((o) => o.label === 't2')!
+    expect([t2.displayLabel, t2.apply, t2.type, t2.boost]).toEqual(['$t2', '$t2', 'register', 5])
+    expect(r.from).toBe((source + '    add $t0, $t1, ').length)
+    // The library matches "t" in "t2"; the highlight moves past the "$" shown in front.
+    expect(r.getMatch!(t2, [0, 1])).toEqual([1, 2])
+    expect(registersIn(r).map((o) => o.label)).toContain('zero')
+    expect(registersIn(r).map((o) => o.label)).toContain('f12')
+  })
+
+  it('offers them where an operand takes a register: base registers, macro arguments, unknown words', () => {
+    expect(registersIn(typed('    lw $t0, 4(s')).map((o) => o.apply)).toContain('$sp')
+    expect(registersIn(typed('    lw $t0, 4(s')).every((o) => o.boost === 5)).toBe(true)
+    expect(registersIn(typed('    print_int(a'))).not.toHaveLength(0)
+    // In `lw $t0, label` a data label is what usually comes, so labels go first.
+    const lw = typed('    lw $t0, n')!
+    expect(lw.options.find((o) => o.label === 'nums')!.boost).toBe(10)
+    expect(registersIn(lw).every((o) => !o.boost)).toBe(true)
+  })
+
+  it('leaves numbers, numbered registers, directives and jump targets alone', () => {
+    expect(registersIn(typed('    addi $t0, $t0, 4'))).toEqual([])
+    expect(registersIn(typed('    add $t0, $t1, t')).some((o) => /^\d/.test(o.label))).toBe(false)
+    expect(registersIn(typed('    .word s'))).toEqual([])
+    expect(registersIn(typed('    j s'))).toEqual([])
+    expect(registersIn(typed('    beq $t0, $t1, s'))).toEqual([])
+    expect(registersIn(typed('    la $a0, .L'))).toEqual([])
+  })
+
+  it('asks again after the first letter where labels opened on their own, so registers can join', () => {
+    expect(typed('    lw $t0, ')!.validFor).toBeUndefined()
+  })
 })
 
 describe('modifier-click navigation', () => {
