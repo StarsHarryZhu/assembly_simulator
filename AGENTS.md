@@ -36,6 +36,7 @@ produce the golden test fixtures. Interfaces for other ISAs (ARM, x86-64) exist 
   `Text` pair in the engine). Code comments and AGENTS.md files are English.
 - No ASCII art in the UI: structure (bit fields, registers, memory) is drawn with real components.
 - Never use the browser's `confirm()`/`alert()`/`prompt()`: embedded browsers may drop them silently.
+  Closing the tab is the exception: only the browser's own `beforeunload` question can appear then.
 - Colours come from the CSS tokens in `src/ui/theme.css`; both themes must stay legible.
 - Deployment is the owner's job: `.github/workflows/pages.yml` builds and publishes on push to `main`.
 - Open source under the MIT license (`LICENSE`, © 2026 Starfield); keep the copyright notice intact.

@@ -2,12 +2,20 @@
 import { describe, expect, it } from 'vitest'
 import { Session } from '../../src/core/session'
 import { mips } from '../../src/isa/mips'
-import { memoryEntries } from '../../src/ui/ide/memoryEntries'
+import type { DataKind } from '../../src/core/isa'
+import { charOf } from '../../src/core/format'
+import { elementCount, memoryEntries } from '../../src/ui/ide/memoryEntries'
 
 const exceptions = mips.examples.find((e) => e.id === 'exceptions')!.text.en
 
-function entries(s: Session) {
-  return memoryEntries(s.machine!, s.result!.program!, mips, s.file.name, s.last?.memory ?? [])
+function entries(s: Session, views?: Map<string, DataKind>) {
+  return memoryEntries(s.machine!, s.result!.program!, mips, s.file.name, s.last?.memory ?? [], views)
+}
+
+function assembled(text: string) {
+  const s = new Session(mips, { name: 'm.asm', text })
+  s.assemble()
+  return s
 }
 
 describe('memoryEntries', () => {
@@ -53,5 +61,69 @@ describe('memoryEntries', () => {
         resolve()
       }, 50)
     })
+  })
+
+  it('puts unlabelled declarations under the label above: the same kind joins it, any other is named by its offset', () => {
+    const text = [
+      '.data',
+      '.word 0',
+      'A: .word 1, 2, 3, 4',
+      '   .word 5, 6, 7, 8',
+      'msg: .ascii "Hello, "',
+      '     .asciiz "world"',
+      'B: .word 9',
+      '   .byte 1, 2',
+      '   .word 3',
+      'x: .byte 1',
+      '   .align 3',
+      '   .byte 2',
+      '.data 0x10010100',
+      '   .word 4',
+      '.text',
+      'nop',
+    ].join('\n')
+    const list = entries(assembled(text))
+    expect(list.map((e) => [e.title, e.kind, e.count])).toEqual([
+      ['(no label)', 'word', 1],
+      ['A', 'word', 8],
+      ['msg', 'asciiz', 13],
+      ['B', 'word', 1],
+      ['B+4', 'byte', 2],
+      ['B+8', 'word', 1],
+      ['x', 'byte', 1],
+      ['x+8', 'byte', 1],
+      ['(no label)', 'word', 1],
+    ])
+    expect(list[1]!.summary).toBe('[1, 2, 3, 4, 5, 6, 7, 8]')
+    expect(list[1]!.size).toBe(32)
+    expect(list[2]!.summary).toBe('"Hello, world"')
+  })
+
+  it('reads an entry as another kind, keyed by its label so the choice survives moved lines', () => {
+    const text = '.data\nbuf: .space 10\nw: .word 0x12345678\n.text\n la $t0, buf\n li $t1, 0x64636261\n sw $t1, 0($t0)\n li $t1, 5\n sw $t1, 4($t0)\n'
+    const s = assembled(text)
+    for (let i = 0; i < 5; i++) s.step()
+    const views = new Map<string, DataKind>([
+      ['lbuf', 'word'],
+      ['lw', 'space'],
+    ])
+    const [buf, w] = entries(s, views)
+    expect([buf!.view, buf!.summary]).toEqual(['word', '[1684234849, 5]'])
+    expect(elementCount(buf!, 'word')).toBe(2)
+    expect(elementCount(buf!, 'double')).toBe(1)
+    // A word's bytes, lowest address first: MIPS in MARS is little-endian.
+    expect([w!.view, w!.summary]).toEqual(['space', '[78 56 34 12]'])
+    views.set('lbuf', 'asciiz')
+    expect(entries(s, views)[0]!.summary).toBe(`"abcd${charOf(5)}"`)
+    views.set('lbuf', 'byte')
+    expect(entries(s, views)[0]!.summary).toBe('[97, 98, 99, 100, 5, 0, 0, 0, 0, 0]')
+    // Without a choice, an entry is read as its own kind; a label keeps its choice when lines move.
+    expect(entries(s)[0]!.view).toBe('space')
+    expect(entries(assembled('\n\n' + text), new Map([['lbuf', 'word']]))[0]!.view).toBe('word')
+  })
+
+  it('still says an untouched .space is all zero, whatever it is read as', () => {
+    const s = assembled('.data\nbuf: .space 64\n.text\nnop\n')
+    for (const view of ['space', 'word', 'asciiz', 'double'] as DataKind[]) expect(entries(s, new Map([['lbuf', view]]))[0]!.summary).toBe('64 bytes, all zero')
   })
 })

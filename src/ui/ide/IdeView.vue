@@ -138,8 +138,36 @@ function downloadName(): string {
 }
 
 function download() {
-  downloadBytes(downloadName(), s.file.text, 'text/plain;charset=utf-8')
+  // Clean first: should a browser treat the download link as leaving the page, there is nothing to warn about.
   markClean()
+  downloadBytes(downloadName(), s.file.text, 'text/plain;charset=utf-8')
+}
+
+/*
+ * Closing or reloading the tab with code that was never downloaded. The browser asks here with its own
+ * wording and buttons: pages cannot draw while they are being closed, and any text they give is ignored.
+ * Timers wait while that question is open, so one that runs means the person chose to stay: then offer the
+ * download in the page.
+ */
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (isUnchanged()) return
+  e.preventDefault()
+  e.returnValue = true // older browsers ask only when this is set
+  setTimeout(offerDownload, 0)
+}
+async function offerDownload() {
+  if (question.value || !root.value || root.value.offsetParent === null || isUnchanged()) return
+  const choice = await ask(
+    t(
+      `当前代码还没有下载。这个浏览器会自动留一份，但清除浏览数据或换一台电脑就没有了。\n现在把它下载成 ${downloadName()} 吗？`,
+      `This code has not been downloaded. This browser keeps a copy, but it is gone if the browsing data is cleared or on another computer.\nDownload it now as ${downloadName()}?`,
+    ),
+    [
+      { value: 'later', label: t('先不下载', 'Not now') },
+      { value: 'save', label: t('下载', 'Download'), primary: true },
+    ],
+  )
+  if (choice === 'save') download()
 }
 
 function rename() {
@@ -191,8 +219,14 @@ watch(lang, (l) => {
   if (s.mode === 'idle' && !s.stale && (!s.machine || s.machine.steps === 0)) s.assemble()
 })
 
-onMounted(() => window.addEventListener('keydown', onKey))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+onMounted(() => {
+  window.addEventListener('keydown', onKey)
+  window.addEventListener('beforeunload', onBeforeUnload)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey)
+  window.removeEventListener('beforeunload', onBeforeUnload)
+})
 </script>
 
 <template>

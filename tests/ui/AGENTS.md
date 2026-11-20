@@ -17,7 +17,8 @@ themselves are checked by hand in the browser.
 - `editor.test.ts` — line scan, source index (label kinds and declarations), section directive layout
   on input, suggestions (labels by operand, registers typed without `$`), modifier-click targets, the Format transaction (cursor,
   breakpoints, undo and redo).
-- `memory.test.ts` — memory panel entries: kernel addresses, large buffers, undeclared writes.
+- `memory.test.ts` — memory panel entries: kernel addresses, large buffers, undeclared writes,
+  unlabelled declarations under a label, reading an entry as another kind.
 
 ## 4. Progress
 

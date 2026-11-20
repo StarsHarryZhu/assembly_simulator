@@ -2,12 +2,14 @@
 /**
  * Data memory as entries: one per data declaration, one per heap block, and one per run of other words
  * the program wrote. Each entry shows a one-line summary and opens to show every element. Entries the
- * last step wrote are highlighted; entries written at any point carry a marker.
+ * last step wrote are highlighted; entries written at any point carry a marker. An opened entry can be read
+ * as another kind (hex bytes, text, words, …).
  */
 import { t } from '../i18n'
 import { computed, reactive } from 'vue'
 import { charOf, hex8, hexN } from '../../core/format'
-import { ELEM, elementText, KIND_TITLE, memoryEntries, type MemoryEntry } from './memoryEntries'
+import type { DataKind } from '../../core/isa'
+import { ELEM, elementCount, elementText, KIND_TITLE, memoryEntries, type MemoryEntry } from './memoryEntries'
 import type { SessionHandle } from './useSession'
 
 const props = defineProps<{ handle: SessionHandle }>()
@@ -16,6 +18,8 @@ const v = props.handle.version
 const isa = s.isa
 const open = reactive(new Set<string>())
 const limit = reactive(new Map<string, number>())
+/** The kind each entry is read as, when not its own. */
+const views = reactive(new Map<string, DataKind>())
 const PAGE = 256
 
 const view = computed(() => {
@@ -23,8 +27,23 @@ const view = computed(() => {
   const m = s.machine
   const p = s.result?.program
   if (!m || !p) return null
-  return memoryEntries(m, p, isa, s.file.name, s.mode === 'running' ? [] : (s.last?.memory ?? []))
+  return memoryEntries(m, p, isa, s.file.name, s.mode === 'running' ? [] : (s.last?.memory ?? []), views)
 })
+
+const TEXT_KINDS: DataKind[] = ['ascii', 'asciiz']
+/** The ways to read an entry: its bytes in hex with their characters, its text, or elements of each size. */
+function viewOptions(e: MemoryEntry): { kind: DataKind; label: string }[] {
+  return [
+    { kind: 'space', label: t('十六进制', 'Hex') },
+    { kind: e.kind === 'ascii' ? 'ascii' : 'asciiz', label: t('文本', 'Text') },
+    ...(['word', 'half', 'byte', 'float', 'double'] as const).map((k) => ({ kind: k, label: KIND_TITLE[k] })),
+  ]
+}
+const viewLabel = (e: MemoryEntry) => viewOptions(e).find((o) => o.kind === e.view)?.label ?? KIND_TITLE[e.view]
+function setView(e: MemoryEntry, kind: DataKind) {
+  if (kind === e.kind) views.delete(e.key)
+  else views.set(e.key, kind)
+}
 
 /** One byte of a string or .space line: two hex digits and one fixed-width character cell. */
 interface ByteCell {
@@ -73,7 +92,7 @@ function rows(e: MemoryEntry): { bytes: boolean; list: Row[]; more: number; idxW
   const max = limit.get(e.key) ?? PAGE
   const touched = s.mode === 'running' ? [] : (s.last?.memory ?? [])
   const hit = (a: number, n: number) => touched.some((c) => c.addr >>> 0 < a + n && (c.addr >>> 0) + c.size > a)
-  if (e.kind === 'ascii' || e.kind === 'asciiz' || e.kind === 'space') {
+  if (TEXT_KINDS.includes(e.view) || e.view === 'space') {
     const lines = Math.ceil(e.size / 8)
     return {
       bytes: true,
@@ -88,13 +107,22 @@ function rows(e: MemoryEntry): { bytes: boolean; list: Row[]; more: number; idxW
       hexWidth: 24,
     }
   }
-  const step = ELEM[e.kind]
-  const list = Array.from({ length: Math.min(e.count, max) }, (_, i) => {
+  const step = ELEM[e.view]
+  const count = elementCount(e, e.view)
+  const list: Row[] = Array.from({ length: Math.min(count, max) }, (_, i) => {
     const a = e.addr + i * step
-    const { hex, value } = elementText(isa, m, e.kind, a)
+    const { hex, value } = elementText(isa, m, e.view, a)
     return { key: a, addr: hex8(a), idx: `[${i}]`, cells: null, hex, value, zero: /^0x0+$/.test(hex), flash: hit(a, step) }
   })
-  return { bytes: false, list, more: e.count - max, idxWidth: `[${e.count - 1}]`.length, hexWidth: list[0]?.hex.length ?? 10 }
+  // Read as a larger kind, the bytes after the last whole element.
+  const rest = e.view === e.kind ? 0 : e.size - count * step
+  if (rest > 0 && count <= max) {
+    const a = e.addr + count * step
+    const pairs = Array.from({ length: rest }, (_, j) => hexN(m.readByte(a + j), 2).slice(2)).join(' ')
+    list.push({ key: a, addr: hex8(a), idx: `+${count * step}`, cells: null, hex: '', value: t(`还剩 ${rest} 字节：${pairs}`, `${rest} more bytes: ${pairs}`), zero: false, flash: hit(a, rest) })
+  }
+  const idxWidth = Math.max(`[${Math.max(count - 1, 0)}]`.length, rest > 0 ? `+${count * step}`.length : 0)
+  return { bytes: false, list, more: count - max, idxWidth, hexWidth: list[0]?.hex.length || 10 }
 }
 
 function toggle(key: string) {
@@ -119,12 +147,26 @@ function toggle(key: string) {
           <span class="caret">{{ open.has(e.key) ? '▾' : '▸' }}</span>
           <span class="t mono">{{ e.title }}</span>
           <span class="badge">{{ KIND_TITLE[e.kind] }}{{ e.count > 1 && !['ascii', 'asciiz', 'space'].includes(e.kind) ? ` ×${e.count}` : '' }}</span>
+          <span v-if="e.view !== e.kind" class="badge">{{ t(`读作：${viewLabel(e)}`, `read as ${viewLabel(e)}`) }}</span>
           <span v-if="e.note" class="badge warn">{{ e.note }}</span>
           <span v-if="e.ever" class="badge err">{{ t('改过', 'written') }}</span>
           <span class="addr mono small muted">{{ hex8(e.addr) }}</span>
           <span class="sum mono">{{ e.summary }}</span>
         </button>
         <template v-if="open.has(e.key)">
+          <div class="readas" role="group" :aria-label="t('读作', 'Read as')">
+            <span class="small muted">{{ t('读作', 'Read as') }}</span>
+            <button
+              v-for="o in viewOptions(e)"
+              :key="o.kind"
+              class="chip"
+              :aria-pressed="e.view === o.kind"
+              :title="o.kind === e.kind ? t('声明时的类型', 'The declared kind') : undefined"
+              @click="setView(e, o.kind)"
+            >
+              {{ o.label }}
+            </button>
+          </div>
           <div v-for="r in [rows(e)]" :key="'r'" class="rows" :style="{ '--idx': `${r.idxWidth}ch`, '--hex': `${r.hexWidth}ch` }">
             <div v-for="x in r.list" :key="x.key" class="row mono" :class="{ flash: x.flash, bytes: r.bytes }">
               <span class="a">{{ x.addr }}</span>
@@ -229,6 +271,19 @@ h3 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.readas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.readas .chip {
+  font-size: 11px;
+  padding: 1px 7px;
 }
 .rows {
   border-top: 1px solid var(--border);

@@ -5,6 +5,13 @@
  * Built after every step, so the cost must not grow with the size of a declaration or of the address
  * space: addresses are kept unsigned (kernel data lives at 0x90000000, which `& ~3` would turn negative),
  * and "was it ever written" comes from a binary search in the sorted list of written words.
+ *
+ * A declaration without a label belongs to the label above it: when it holds the same kind of data and starts
+ * right where that entry ends, it joins the entry (`A: .word 1, 2` and a next line `.word 3, 4` are four words
+ * of A; strings join strings), otherwise it is its own entry named by its offset from that label (`A+8`).
+ *
+ * Every entry can be read as another kind (a .space buffer as words or as text, a word as its bytes); the
+ * summary and the rows follow that view.
  */
 import { charOf, doubleFromBits, floatFromBits, hex8, hexN, javaDouble, javaFloat } from '../../core/format'
 import type { DataKind, IsaPlugin, Machine, MemChange, Program } from '../../core/isa'
@@ -20,6 +27,8 @@ export interface MemoryEntry {
   count: number
   note: string
   line: number | null
+  /** How it is read: its own kind unless the viewer picked another. */
+  view: DataKind
   /** The last step wrote into it. */
   flash: boolean
   /** Written at some point of the run. */
@@ -39,6 +48,13 @@ export const KIND_TITLE: Record<DataKind, string> = {
 }
 
 export const ELEM: Record<DataKind, number> = { word: 4, half: 2, byte: 1, ascii: 1, asciiz: 1, space: 1, float: 4, double: 8 }
+
+const TEXT = new Set<DataKind>(['ascii', 'asciiz'])
+
+/** Elements an entry holds when read as `view`; a view other than its own kind takes the whole elements that fit. */
+export function elementCount(e: { kind: DataKind; size: number; count: number }, view: DataKind): number {
+  return view === e.kind ? e.count : Math.floor(e.size / ELEM[view])
+}
 
 function readHalf(isa: IsaPlugin, m: Machine, a: number) {
   return isa.layout.littleEndian ? m.readByte(a) | (m.readByte(a + 1) << 8) : (m.readByte(a) << 8) | m.readByte(a + 1)
@@ -82,53 +98,94 @@ function lowerBound(list: number[], a: number): number {
   return lo
 }
 
-type Base = Omit<MemoryEntry, 'flash' | 'ever' | 'summary'>
+type Base = Omit<MemoryEntry, 'view' | 'flash' | 'ever' | 'summary'>
 
-function summary(isa: IsaPlugin, m: Machine, e: Base, written: number[], ever: boolean): string {
-  if (e.kind === 'ascii' || e.kind === 'asciiz') {
+function summary(isa: IsaPlugin, m: Machine, e: Base, view: DataKind, written: number[], ever: boolean): string {
+  if (e.kind === 'space') {
+    // .space starts as zeros, so only the words written since can make it non-zero.
+    let zeros = true
+    const end = e.addr + e.size
+    for (let i = lowerBound(written, (e.addr & ~3) >>> 0); ever && zeros && i < written.length && written[i]! < end; i++) {
+      for (let b = 0; b < 4; b++) {
+        const a = written[i]! + b
+        if (a >= e.addr && a < end && m.readByte(a)) zeros = false
+      }
+    }
+    if (zeros) return t(`${e.size} 字节，全是 0`, `${e.size} bytes, all zero`)
+  }
+  if (TEXT.has(view)) {
+    // A declared string shows all of its text; other memory read as text stops at the first 0, as print_string does.
+    const declared = TEXT.has(e.kind)
+    let n = declared && e.kind === 'asciiz' ? e.size - 1 : e.size
     let out = ''
-    const n = e.kind === 'asciiz' ? e.size - 1 : e.size
-    for (let i = 0; i < Math.min(n, 60); i++) out += charOf(m.readByte(e.addr + i))
+    for (let i = 0; i < Math.min(n, 60); i++) {
+      const b = m.readByte(e.addr + i)
+      if (!declared && b === 0) {
+        n = i
+        break
+      }
+      out += charOf(b)
+    }
     return `"${out}${n > 60 ? '…' : ''}"`
   }
-  if (e.kind === 'space' || e.kind === 'byte') {
-    if (e.kind === 'space') {
-      // .space starts as zeros, so only the words written since can make it non-zero.
-      let zeros = true
-      const end = e.addr + e.size
-      for (let i = lowerBound(written, (e.addr & ~3) >>> 0); ever && zeros && i < written.length && written[i]! < end; i++) {
-        for (let b = 0; b < 4; b++) {
-          const a = written[i]! + b
-          if (a >= e.addr && a < end && m.readByte(a)) zeros = false
-        }
-      }
-      if (zeros) return t(`${e.size} 字节，全是 0`, `${e.size} bytes, all zero`)
-    }
+  if (view === 'space' || view === 'byte') {
     const n = Math.min(e.size, 16)
     const parts: string[] = []
-    for (let i = 0; i < n; i++) parts.push(e.kind === 'byte' ? String((m.readByte(e.addr + i) << 24) >> 24) : hexN(m.readByte(e.addr + i), 2).slice(2))
-    return `[${parts.join(e.kind === 'byte' ? ', ' : ' ')}${e.size > n ? ' …' : ''}]`
+    for (let i = 0; i < n; i++) parts.push(view === 'byte' ? String((m.readByte(e.addr + i) << 24) >> 24) : hexN(m.readByte(e.addr + i), 2).slice(2))
+    return `[${parts.join(view === 'byte' ? ', ' : ' ')}${e.size > n ? ' …' : ''}]`
   }
-  const step = ELEM[e.kind]
-  const n = Math.min(e.count, 10)
+  const step = ELEM[view]
+  const count = elementCount(e, view)
+  const n = Math.min(count, 10)
   const parts: string[] = []
-  for (let i = 0; i < n; i++) parts.push(elementText(isa, m, e.kind, e.addr + i * step).value)
-  return `[${parts.join(', ')}${e.count > n ? ', …' : ''}]`
+  for (let i = 0; i < n; i++) parts.push(elementText(isa, m, view, e.addr + i * step).value)
+  return `[${parts.join(', ')}${count > n ? ', …' : ''}]`
 }
 
-export function memoryEntries(m: Machine, p: Program, isa: IsaPlugin, fileName: string, touched: MemChange[]): MemoryEntry[] {
+/** Same kind of data, so the second can continue the first: strings join strings. */
+const joins = (a: DataKind, b: DataKind) => a === b || (TEXT.has(a) && TEXT.has(b))
+
+/**
+ * `views` maps an entry's key to the kind it is read as. Keys of labelled declarations are their label, so
+ * the choice survives edits that move lines.
+ */
+export function memoryEntries(
+  m: Machine,
+  p: Program,
+  isa: IsaPlugin,
+  fileName: string,
+  touched: MemChange[],
+  views?: ReadonlyMap<string, DataKind>,
+): MemoryEntry[] {
   const entries: Base[] = []
+  // Per segment: the entry of the last declaration, the label it belongs to, and where it ends.
+  const chain = new Map<string, { entry: Base; label: string | null; labelAddr: number; end: number }>()
   for (const d of p.declarations) {
-    entries.push({
-      key: `d${d.addr}:${d.line}`,
-      title: d.label ?? t('（无标签）', '(no label)'),
+    const addr = d.addr >>> 0
+    const prev = chain.get(d.segment)
+    // Only alignment padding (under 8 bytes) may lie between this declaration and the one before.
+    const follows = !!prev && addr >= prev.end && addr - prev.end < 8
+    if (!d.label && follows && addr === prev!.end && joins(prev!.entry.kind, d.kind)) {
+      const e = prev!.entry
+      e.size = addr + d.size - e.addr
+      e.count += d.count
+      if (TEXT.has(d.kind)) e.kind = d.kind // a string ends the way its last part does
+      prev!.end = addr + d.size
+      continue
+    }
+    const owner = d.label ? { label: d.label, labelAddr: addr } : follows && prev!.label ? { label: prev!.label, labelAddr: prev!.labelAddr } : { label: null, labelAddr: addr }
+    const entry: Base = {
+      key: d.label ? `l${d.label}` : `d${addr}:${d.line}`,
+      title: d.label ?? (owner.label ? `${owner.label}+${addr - owner.labelAddr}` : t('（无标签）', '(no label)')),
       kind: d.kind,
-      addr: d.addr >>> 0,
+      addr,
       size: d.size,
       count: d.count,
       note: d.segment === 'data' ? '' : d.segment === 'kdata' ? '.kdata' : d.segment === 'extern' ? '.extern' : d.segment,
       line: d.file === fileName ? d.line : null,
-    })
+    }
+    entries.push(entry)
+    chain.set(d.segment, { entry, ...owner, end: addr + d.size })
   }
   for (const h of m.heapBlocks()) {
     entries.push({ key: `h${h.addr}`, title: t(`堆块 #${h.index + 1}`, `heap block #${h.index + 1}`), kind: 'word', addr: h.addr >>> 0, size: h.size, count: Math.ceil(h.size / 4), note: 'sbrk', line: null })
@@ -165,6 +222,7 @@ export function memoryEntries(m: Machine, p: Program, isa: IsaPlugin, fileName: 
     const flash = touched.some((c) => c.addr >>> 0 < end && (c.addr >>> 0) + c.size > e.addr)
     const first = lowerBound(written, (e.addr & ~3) >>> 0)
     const ever = first < written.length && written[first]! < end
-    return { ...e, flash, ever, summary: summary(isa, m, e, written, ever) }
+    const view = views?.get(e.key) ?? e.kind
+    return { ...e, view, flash, ever, summary: summary(isa, m, e, view, written, ever) }
   })
 }

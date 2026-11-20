@@ -6,7 +6,9 @@ The Edit & run tab: a CodeMirror editor with breakpoints and error marks, a tool
 ways to execute (step, run, auto-step at an interval) plus back and reset, a terminal that takes keyboard
 input, and the machine panels. Registers are drawn in one grid coloured by use (grey unused, green read,
 red written, the last step's writes in stronger red until the next step); the stack is shown from `$sp` to its base; memory is one entry per
-data declaration plus heap blocks and other written ranges.
+labelled data declaration (unlabelled declarations of the same kind right after it join it, others are
+named `label+offset`) plus heap blocks and other written ranges, and each entry can be read as another
+kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
 
 ## 2. Constraints
 
@@ -42,13 +44,17 @@ data declaration plus heap blocks and other written ranges.
   a hand cursor, as VS Code does, and clears the decoration when the modifier is released or the pointer
   leaves the token. Included files have no editor, so their labels cannot be jumped to.
 - Never use the browser's `confirm()`/`alert()`: embedded browsers may drop them. Ask with
-  `ConfirmDialog.vue`.
+  `ConfirmDialog.vue`. The one exception is closing or reloading the tab with code that was never
+  downloaded: only the browser's own `beforeunload` question is possible there, so `IdeView.vue` asks for
+  it, and offers the download in the page when the person stays.
 
 ## 3. Contents
 
-- `IdeView.vue` — layout, shortcuts, file drop, New/Open/examples with the unsaved-changes prompt;
+- `IdeView.vue` — layout, shortcuts, file drop, New/Open/examples with the unsaved-changes prompt, the
+  warning on closing the tab;
   forwards the editor's `open-instruction` event to the app.
-- `useSession.ts` — creates the session, version counter, busy state, saved code and settings, sound.
+- `useSession.ts` — creates the session, version counter, busy state, saved code and settings (written
+  at once when the page is closed), sound.
 - `editor.ts` — CodeMirror language, label and section marks, VS Code-style suggestions (with a short
   index of an instruction's reference tables, and each directive's explanation), auto-closed quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback, the Format transaction.
 - `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line);
@@ -60,8 +66,9 @@ data declaration plus heap blocks and other written ranges.
 - `RegisterPanel.vue` — all register banks in one grid with use colours, last-step highlight, details.
 - `StackPanel.vue` — words from `$sp` up to the stack base, top first.
 - `MemoryPanel.vue` — data declarations, heap blocks and other written memory; rows in fixed `ch`
-  columns, strings and `.space` as hex plus one character cell per byte.
-- `memoryEntries.ts` — builds the memory panel's entries and summaries (cost independent of sizes).
+  columns, strings and `.space` as hex plus one character cell per byte; the "read as" choice per entry.
+- `memoryEntries.ts` — builds the memory panel's entries and summaries (cost independent of sizes):
+  joins unlabelled declarations to the label above, and reads an entry as the kind the viewer picked.
 - `TextSegmentView.vue` — the assembled machine code next to the source.
 - `DialogHost.vue` — dialogs for the syscalls 50–59.
 - `ConfirmDialog.vue` — in-page question with several answers (save / don't save / cancel).

@@ -95,8 +95,17 @@ export function useSession(isa: IsaPlugin): SessionHandle {
     }
   })
   session.assemble()
+  // Closing the tab never unmounts the app: write the last edits now instead of when the timer fires.
+  const flush = () => {
+    if (saveTimer == null) return
+    clearTimeout(saveTimer)
+    saveTimer = null
+    persist()
+  }
+  window.addEventListener('pagehide', flush)
 
   onBeforeUnmount(() => {
+    window.removeEventListener('pagehide', flush)
     off()
     if (saveTimer != null) clearTimeout(saveTimer)
     persist()
