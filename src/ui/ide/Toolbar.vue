@@ -1,14 +1,16 @@
 <script setup lang="ts">
 /**
- * File actions, the run controls (run / step / back / auto / pause / reset) and the status line. There is no
+ * File actions, Format, the run controls (run / step / back / auto / pause / reset) and the status line. There is no
  * assemble button: every control assembles first when the code changed since the last assembly.
  */
 import { t, tx } from '../i18n'
 import { computed } from 'vue'
+import { formatShortcut } from './editor'
 import type { SessionHandle } from './useSession'
 
 const props = defineProps<{ handle: SessionHandle }>()
-const emit = defineEmits<{ new: []; open: []; download: []; example: [id: string] }>()
+const emit = defineEmits<{ new: []; open: []; download: []; example: [id: string]; format: [] }>()
+const formatKey = formatShortcut()
 const s = props.handle.session
 const v = props.handle.version
 const busy = props.handle.busy
@@ -83,6 +85,14 @@ function toggleAuto() {
         <option value="" disabled hidden>{{ t('示例程序…', 'Examples…') }}</option>
         <option v-for="ex in s.isa.examples" :key="ex.id" :value="ex.id">{{ tx(ex.title) }}</option>
       </select>
+      <button
+        v-if="s.isa.format"
+        class="btn"
+        :title="t(`整理缩进、对齐和空格（${formatKey}）：只改空白，不改代码`, `Tidy indentation, alignment and spacing (${formatKey}): only whitespace changes, never the code`)"
+        @click="emit('format')"
+      >
+        {{ t('格式化', 'Format') }}
+      </button>
     </div>
     <div class="group">
       <button class="btn primary" :title="t('运行到结束、断点或需要输入（F5）', 'Run to the end, a breakpoint or an input request (F5)')" :disabled="!st.canGo || st.busy || busy" @click="go(() => s.run())">

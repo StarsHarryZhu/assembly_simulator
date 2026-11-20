@@ -184,16 +184,35 @@ export class Session {
   replaceComments(text: string): void {
     if (text === this.file.text) return
     if (!sameCode(text, this.file.text, this.isa.language.commentChar)) return this.setSource(text)
+    this.keepProgram(text)
+    this.notify()
+  }
+
+  /**
+   * Take the formatter's version of the source. When it keeps every line in place, the program is the same
+   * and a paused run can go on; a program that has not started is reassembled so messages show the new
+   * columns. When lines moved (a label put on its own line), or the text is not the formatter's output, it
+   * is an ordinary edit.
+   */
+  reformat(text: string): void {
+    if (text === this.file.text) return
+    const before = this.file.text
+    if (this.isa.format?.(before) !== text || text.split('\n').length !== before.split('\n').length) return this.setSource(text)
+    this.keepProgram(text)
+    if (this.mode === 'idle' && !this.stale && (!this.machine || this.machine.steps === 0)) this.assemble()
+    else this.notify()
+  }
+
+  /** Swap in text with the same instructions on the same lines, keeping the assembled program if it was current. */
+  private keepProgram(text: string): void {
     const current = !this.stale
     this.file.text = text
-    if (current) {
-      this.assembledText = text
-      const lines = text.split('\n')
-      for (const ins of this.result?.program?.instructions ?? []) {
-        if (ins.file === this.file.name && lines[ins.line - 1] != null) ins.source = lines[ins.line - 1]!
-      }
+    if (!current) return
+    this.assembledText = text
+    const lines = text.split('\n')
+    for (const ins of this.result?.program?.instructions ?? []) {
+      if (ins.file === this.file.name && lines[ins.line - 1] != null) ins.source = lines[ins.line - 1]!
     }
-    this.notify()
   }
 
   setName(name: string): void {

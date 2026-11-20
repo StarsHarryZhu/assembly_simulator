@@ -401,4 +401,9 @@ export interface IsaPlugin {
   analyzeLine(line: string, options?: { at?: number; labels?: Record<string, number> }): LineAnalysis
   /** Write a line for a catalog form from its operand texts (the inverse of analyzeLine's operands). */
   buildLine(entryKey: string, operands: string[]): string
+  /**
+   * Lay a source out in the ISA's house style (the editor's Format command). Only whitespace may change,
+   * except that a line break may move a code label onto its own line, so the program assembles the same.
+   */
+  format?(text: string): string
 }

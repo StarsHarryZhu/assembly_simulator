@@ -17,7 +17,12 @@ data declaration plus heap blocks and other written ranges.
 - Addresses are unsigned: normalise with `>>> 0` after any bit operation (`addr & ~3` is negative for
   kernel addresses such as 0x90000000, which once made every step scan half the address space).
 - Keyboard shortcuts (F5 run, F6 auto, F7 step, F8 back, F9 pause, F10 reset) call `preventDefault`
-  so the browser does not reload.
+  so the browser does not reload. Format is ⇧⌥F / Shift+Alt+F as in VS Code, read from `e.code` (⌥
+  changes `e.key` on macOS) and ignored while a text field has the focus.
+- Format is one transaction from `formatTransaction` (built on `whitespaceChanges`), tagged `format` and
+  isolated in the undo history, so the cursor and marks map through it. Breakpoints follow their
+  statements when a label moves to its own line, and undo/redo move them back (`invertedEffects`). The
+  session gets the text through `reformat`, which keeps a paused run when no line moved.
 - There is no assemble button: run controls go through `handle.control`, which assembles first (with
   the spinner) when the code changed. Slow actions show the shared `.spinner` from `theme.css`.
 - The editor's tab width and indent unit are 4 spaces.
@@ -42,10 +47,10 @@ data declaration plus heap blocks and other written ranges.
   forwards the editor's `open-instruction` event to the app.
 - `useSession.ts` — creates the session, version counter, busy state, saved code and settings, sound.
 - `editor.ts` — CodeMirror language, label and section marks, VS Code-style suggestions (with a short
-  index of an instruction's reference tables, and each directive's explanation), auto-closed quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback.
+  index of an instruction's reference tables, and each directive's explanation), auto-closed quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback, the Format transaction.
 - `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line);
-  emits `open-instruction` for a modifier-clicked mnemonic.
-- `Toolbar.vue` — new, open, download, examples, run controls, interval, step size (line by default), status.
+  emits `open-instruction` for a modifier-clicked mnemonic; `format()` applies the plugin's formatter.
+- `Toolbar.vue` — new, open, download, examples, format, run controls, interval, step size (line by default), status.
 - `TerminalPane.vue` — program output with input prompt, messages, files.
 - `FilesPanel.vue` — files the program can open, with upload and download.
 - `files.ts` — saving bytes or text as a browser download.

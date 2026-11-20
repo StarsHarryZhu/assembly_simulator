@@ -7,7 +7,7 @@ import { EditorState } from '@codemirror/state'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { AssembleResult } from '../../core/isa'
 import type { SessionHandle } from './useSession'
-import { breakpointLines, breakpointsChanged, editorExtensions, editorNavigation, setBreakpointLines, setMark, type Mark } from './editor'
+import { breakpointLines, breakpointsChanged, editorExtensions, editorNavigation, formatTransaction, setBreakpointLines, setMark, type Mark } from './editor'
 
 const props = defineProps<{ handle: SessionHandle }>()
 const emit = defineEmits<{ 'open-instruction': [line: string] }>()
@@ -74,7 +74,12 @@ onMounted(() => {
       doc: s.file.text,
       extensions: editorExtensions(s.isa, [
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) s.setSource(u.state.doc.toString())
+          if (u.docChanged) {
+            const text = u.state.doc.toString()
+            // The Format command keeps a paused program running when no line moved.
+            if (u.transactions.every((tr) => !tr.docChanged || tr.isUserEvent('format'))) s.reformat(text)
+            else s.setSource(text)
+          }
           if (breakpointsChanged(u.startState, u.state)) s.setBreakpoints(breakpointLines(u.state))
         }),
         editorNavigation(s.isa, {
@@ -106,7 +111,15 @@ function goto(line: number, col = 0) {
   view.focus()
 }
 
-defineExpose({ goto })
+/** Format the code with the plugin's formatter (only whitespace changes), as one undo step. */
+function format(): boolean {
+  if (!view || !s.isa.format) return false
+  const spec = formatTransaction(view.state, s.isa.format(view.state.doc.toString()))
+  if (spec) view.dispatch(spec)
+  return !!spec
+}
+
+defineExpose({ goto, format })
 </script>
 
 <template>

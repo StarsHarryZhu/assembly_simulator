@@ -5,6 +5,7 @@ import { assemble, DATA_BASE, DIRECTIVES, MNEMONICS, TEXT_BASE } from './assembl
 import { analyzeLine, buildLine } from './calc'
 import { createMachine, HEAP_BASE, INITIAL_SP } from './cpu'
 import { decodeView } from './decoder'
+import { formatSource } from './format'
 import { FIELD_TITLES } from './formats'
 import { ALL_FORMS } from './forms'
 import { tokenize } from './lexer'
@@ -120,4 +121,5 @@ export const mips: IsaPlugin = {
   decode: (word: number, addr: number) => decodeView(word, addr),
   analyzeLine: (line, options) => analyzeLine(line, CATALOG, options),
   buildLine,
+  format: formatSource,
 }

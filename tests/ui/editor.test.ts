@@ -1,10 +1,24 @@
-/** Editor helpers that work on EditorState alone: line scan, source index, section directives, suggestions, navigation. */
+/**
+ * Editor helpers that work on EditorState alone: line scan, source index, section directives, suggestions,
+ * navigation, and the Format transaction with its breakpoints and undo.
+ */
 import { CompletionContext, insertBracket, type CompletionResult } from '@codemirror/autocomplete'
-import { EditorState } from '@codemirror/state'
+import { redo, undo } from '@codemirror/commands'
+import { EditorState, type Transaction } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import { mips } from '../../src/isa/mips'
 import { getIndentUnit } from '@codemirror/language'
-import { completer, editorExtensions, flushSectionsOnInput, navigationTarget, scanLine, sourceIndex } from '../../src/ui/ide/editor'
+import {
+  breakpointLines,
+  completer,
+  editorExtensions,
+  flushSectionsOnInput,
+  formatTransaction,
+  navigationTarget,
+  scanLine,
+  setBreakpointLines,
+  sourceIndex,
+} from '../../src/ui/ide/editor'
 
 const sections = new Set(mips.language.sections)
 
@@ -222,5 +236,39 @@ describe('modifier-click navigation', () => {
     expect(nav('.data\nbuf: .word 1  # one\n', '.word')).toMatchObject({ kind: 'instruction', line: '.word 1  # one' })
     expect(nav('    thrice\n', 'thrice')).toBeNull()
     expect(nav('start:\n', 'start')).toBeNull()
+  })
+})
+
+describe('formatTransaction', () => {
+  const messy = '.text\nloop: addi $t0,$t0,1   # again\n  j loop'
+  const tidy = '.text\nloop:\n    addi    $t0, $t0, 1         # again\n    j       loop'
+
+  it('moves a breakpoint with its statement, and undo and redo take the text and the breakpoint along', () => {
+    let state = EditorState.create({ doc: messy, extensions: editorExtensions(mips) })
+    state = state.update({ effects: setBreakpointLines.of([2, 3]) }).state
+    state = state.update(formatTransaction(state, mips.format!(messy))!).state
+    expect(state.doc.toString()).toBe(tidy)
+    expect(breakpointLines(state)).toEqual([3, 4])
+    const run = (command: typeof undo) => command({ state, dispatch: (tr: Transaction) => (state = tr.state) })
+    expect(run(undo)).toBe(true)
+    expect(state.doc.toString()).toBe(messy)
+    expect(breakpointLines(state)).toEqual([2, 3])
+    expect(run(undo)).toBe(false)
+    run(redo)
+    expect(state.doc.toString()).toBe(tidy)
+    expect(breakpointLines(state)).toEqual([3, 4])
+  })
+
+  it('keeps the cursor between the same characters', () => {
+    const at = messy.indexOf(',$t0')
+    const state = EditorState.create({ doc: messy, selection: { anchor: at }, extensions: editorExtensions(mips) })
+    const next = state.update(formatTransaction(state, mips.format!(messy))!).state
+    expect(next.doc.sliceString(next.selection.main.head - 3, next.selection.main.head + 1)).toBe('$t0,')
+  })
+
+  it('does nothing when the code is already formatted or the text differs in more than whitespace', () => {
+    const state = EditorState.create({ doc: tidy, extensions: editorExtensions(mips) })
+    expect(formatTransaction(state, tidy)).toBeNull()
+    expect(formatTransaction(state, tidy.replace('loop:', 'top:'))).toBeNull()
   })
 })

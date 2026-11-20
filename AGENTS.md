@@ -12,6 +12,8 @@ coprocessor 0 and 1, all 39 syscalls) and has three tabs:
   stay highlighted until the next step), the stack from `$sp` to its base, memory shown as one entry per data declaration, and three
   ways to execute: single step (by source line by default, or by basic instruction, with undo), run,
   and auto-step at an interval. There is no assemble button: every run control reassembles changed code.
+  Format (⇧⌥F / Shift+Alt+F, or the toolbar button) lays the code out like the example programs,
+  changing whitespace only.
 - **Instruction set** — pick or type one line, see its machine code as bit fields (pseudo
   instructions show their whole expansion) and step it on the real machine. Instructions that need
   more than one line get full reference tables: every `syscall` service by `$v0`, the coprocessor 0
@@ -66,9 +68,9 @@ Done:
   runs (about 50k instruction lines, 8k data lines, 2000 random programs, 130 syscall cases, segment
   and exception edge cases); about 5 million instructions per second.
 - Edit & run tab, instruction set tab, disassembler, Chinese/English switch, light/dark themes,
-  layouts from 320 px phones to wide desktops. ⌘/Ctrl-click opens an instruction in the instruction
-  set tab and jumps label and macro references to their definition; while the modifier is held, the
-  target underlines and shows a hand cursor, as in VS Code.
+  layouts from 320 px phones to wide desktops, and a Format command in the examples' layout.
+  ⌘/Ctrl-click opens an instruction in the instruction set tab and jumps label and macro references to
+  their definition; while the modifier is held, the target underlines and shows a hand cursor, as in VS Code.
 
 Not done / known gaps:
 

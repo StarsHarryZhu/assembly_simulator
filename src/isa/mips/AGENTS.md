@@ -20,6 +20,10 @@ generated from it, so they cannot drift apart.
 - Addresses above 0x7fffffff are kept unsigned (`>>> 0`) wherever they index or loop: `a & ~3` alone
   turns kernel and MMIO addresses negative.
 - A failed syscall throws through `syscallFault` (cause 8) so a `.ktext` handler can catch it, as in MARS.
+- The formatter changes whitespace only (moving a code label onto its own line adds a line break), and
+  formatting the examples changes nothing; `tests/mips/format.test.ts` checks both and that every golden
+  program assembles the same after formatting. Lines whose meaning could depend on spacing (an unclosed
+  quote, two labels, an `.eqv` value) are left as written.
 
 ## 3. Contents
 
@@ -41,12 +45,13 @@ generated from it, so they cannot drift apart.
   floating-point condition flags, every directive with an example; written from the engine's
   behaviour and checked against it.
 - `calc.ts` — one line assembled on its own for the calculator, with demo starting values.
+- `format.ts` — the editor's Format command: the example programs' layout (columns, comment column 32).
 - `examples` — example programs for the IDE's menu.
 
 ## 4. Progress
 
 Done: every MARS 4.5 basic and pseudo instruction, directives, macros, kernel handlers, all syscalls,
-both languages. Not done: MARS tools (MMIO devices), delayed branching, the compact memory map.
+both languages, and a formatter in the style of the examples. Not done: MARS tools (MMIO devices), delayed branching, the compact memory map.
 Known differences, all stricter than MARS: instructions written inside `.data` are an error here,
 while MARS accepts them silently; decimal literals above 0xFFFFFFFF are rejected (MARS wraps them
 modulo 2^32); data lists such as `.word 1+2` are rejected instead of being split into separate

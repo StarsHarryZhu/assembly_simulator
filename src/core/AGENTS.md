@@ -16,15 +16,19 @@ breakpoints, console, input), and the rest are small helpers for numbers, memory
 
 ## 3. Contents
 
-- `isa.ts` — the plugin, machine, program, diagnostic, register and calculator contracts, and the
-  reference tables for instructions a one-line description cannot explain (`ReferenceTable`).
+- `isa.ts` — the plugin, machine, program, diagnostic, register and calculator contracts, the
+  reference tables for instructions a one-line description cannot explain (`ReferenceTable`), and the
+  optional `format` (the editor's Format command; whitespace only).
 - `session.ts` — one editing-and-running session: assembly, console, breakpoints, step granularity,
   run in time slices of at most about 12 ms (the page stays responsive), auto-step, undo, program input and dialogs, the in-memory file store. Every run
   control assembles first when the source changed; there is no separate assemble step in the UI.
+  Text that keeps every instruction on its line (comments in another language, formatted code) keeps the
+  assembled program and a paused run (`replaceComments`, `reformat`).
 - `memory.ts` — sparse little-endian memory in 4 KB pages.
 - `format.ts` — hex, binary groups, signed/unsigned, characters, float/double bits, Java-style printing.
 - `i18n.ts` — the two locales, `Text` pairs, `L()`, `tx()`, `cat()`.
-- `source.ts` — section directives to the first column; example comments into another language.
+- `source.ts` — comment position, section directives to the first column, example comments into
+  another language, and the minimal whitespace-only edits between a text and its formatted version.
 
 ## 4. Progress
 

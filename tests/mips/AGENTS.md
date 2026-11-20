@@ -19,6 +19,8 @@ English examples identical in code to the Chinese ones, localized error messages
 - `i18n.test.ts` — translation coverage and consistency.
 - `references.test.ts` — reference tables against the engine: syscall codes, exception codes, CP0
   registers, every directive with an example that assembles, real names, both languages.
+- `format.test.ts` — the Format command: a messy program laid out like the examples, the examples
+  unchanged, only whitespace changed and the same assembly for every golden program, and each rule.
 - `parity.test.ts` — MARS rules the golden programs cannot pin down: `.eqv` and macro rules, text and
   data address limits, deliberate strictness, file descriptors.
 - `regs.ts` — register numbers used by the tests.

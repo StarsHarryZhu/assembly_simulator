@@ -14,7 +14,8 @@ prints at each stage.
 ## 3. Contents
 
 - `session.test.ts` — session behaviour end to end.
-- `source.test.ts` — section directive layout, example comments switching language without changing the run.
+- `source.test.ts` — section directive layout, example comments switching language without changing the
+  run, whitespace-only edits, and formatting that keeps a paused run when no line moves.
 
 ## 4. Progress
 

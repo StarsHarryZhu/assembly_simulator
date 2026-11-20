@@ -17,6 +17,7 @@ The interface is available in **Chinese and English**: it follows the system lan
   - VS Code-style suggestions: at the start of a line it lists instructions (with a description and every form on the right), after `$` it lists registers, and in operand position it lists defined labels. Enter or Tab accepts.
   - Tab indents by 4 spaces (tab characters also display as 4 spaces), and the example programs are indented by 4 spaces.
   - Typing `"` `'` `(` `[` `{` also inserts the closing character with the cursor in between; typing that closing character jumps over it, and Backspace between the pair deletes both. An apostrophe after a word (as in don't inside a comment) is left alone.
+  - **Format** (⇧⌥F on macOS, Shift+Alt+F elsewhere, as in VS Code, or the toolbar's "Format" button) lays the code out like the example programs: section directives and labels in the first column, statements indented by 4 spaces, mnemonics padded to 8 columns, one space after each comma, data in label / directive / value columns, trailing comments aligned at column 32 (Chinese characters count as two columns). A label written in front of an instruction moves to its own line. Only whitespace changes, so the program assembles exactly as before; one undo takes it back, and when no line moves a paused program can keep running.
   - Click a line number to set a breakpoint. Assembly errors are marked at the exact position, and the line being executed is highlighted.
   - **Modifier-click**: hold ⌘ on macOS (Ctrl on Windows and Linux) and click an instruction to open that statement in the Instruction set tab; click a label reference or a macro call to jump to its definition. While the modifier is held, clickable tokens underline and show a hand cursor, as in VS Code. Labels defined in an included file have no editor to jump to.
   - "New" starts an empty file; you can also open an `.asm` file (or drag one into the editor), download it as `.asm`, or pick one of the example programs. If the current code has unsaved changes (changed since opening, creating, or downloading), switching asks first: save (download as `.asm`), don't save, or cancel. Switching the interface language also switches the example programs' comments (code and line numbers stay the same; a running program is untouched). Code is saved in the browser automatically.
@@ -32,7 +33,7 @@ The interface is available in **Chinese and English**: it follows the system lan
 - **Memory**: one entry per `.data` declaration (label, type, address, value); expand an entry to see every element. Blocks allocated by `sbrk` and data written elsewhere each get their own entry too. Recently changed places are highlighted.
 - **Machine code view**: switch the area above the editor to the assembly result (address, machine code, real instruction, matching source line). Click a row to open it in the Disassembler tab.
 
-Shortcuts: F5 run, F6 auto, F7 step, F8 undo, F9 pause, F10 reset.
+Shortcuts: F5 run, F6 auto, F7 step, F8 undo, F9 pause, F10 reset, ⇧⌥F (Shift+Alt+F) format.
 
 ### Instruction set
 

@@ -2,7 +2,8 @@
  * CodeMirror 6 setup for any IsaPlugin: highlighting and completion from plugin.language and the catalog,
  * labels (references to a defined label are pink like the definition), section directives (their own
  * colour, a band across the line, always in the first column), a breakpoint gutter, the current-line /
- * error-line highlight, a VS Code-style suggestion list, and a theme built from the CSS tokens.
+ * error-line highlight, a VS Code-style suggestion list, the Format transaction, and a theme built from the
+ * CSS tokens.
  */
 import { getLocale, L, tx, type Text } from '../../core/i18n'
 
@@ -20,11 +21,11 @@ import {
   type CompletionContext,
   type CompletionResult,
 } from '@codemirror/autocomplete'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab, invertedEffects, isolateHistory } from '@codemirror/commands'
 import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
 import { lintGutter } from '@codemirror/lint'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { EditorState, Facet, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state'
+import { ChangeSet, EditorState, Facet, RangeSet, StateEffect, StateField, type Extension, type TransactionSpec } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -42,7 +43,7 @@ import {
 } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import type { IsaPlugin, LabelKind, ReferenceTable, RefRow } from '../../core/isa'
-import { sectionIndent } from '../../core/source'
+import { sectionIndent, whitespaceChanges } from '../../core/source'
 
 /* ---------------------------------------------------------------- language */
 
@@ -352,9 +353,15 @@ export function navigationTarget(state: EditorState, pos: number, isa: IsaPlugin
   return label ? { kind: 'definition', what: 'label', name: hit.text, line: label.line, col: label.col, ...at } : null
 }
 
-function isMacPlatform(): boolean {
+/** macOS or iOS, where shortcuts use ⌘ and ⌥ and are written with symbols. */
+export function isMacPlatform(): boolean {
   if (typeof navigator === 'undefined') return false
   return /Mac|iPhone|iPad|iPod/.test(`${navigator.platform ?? ''} ${navigator.userAgent}`)
+}
+
+/** How the Format shortcut (VS Code's Format Document) is written on this platform. */
+export function formatShortcut(): string {
+  return isMacPlatform() ? '⇧⌥F' : 'Shift+Alt+F'
 }
 
 /** The modifier VS Code uses for Go to Definition on this platform. */
@@ -704,6 +711,35 @@ export function breakpointLines(state: EditorState): number[] {
   return [...new Set(out)]
 }
 
+/**
+ * Format moves breakpoints with their statements (a `setBreakpointLines` effect in the same transaction).
+ * Undo and redo carry the opposite move, so a breakpoint is not lost when its line break is taken back.
+ */
+const breakpointHistory = invertedEffects.of((tr) =>
+  tr.effects.some((e) => e.is(setBreakpointLines)) && (tr.isUserEvent('format') || tr.isUserEvent('undo') || tr.isUserEvent('redo'))
+    ? [setBreakpointLines.of(breakpointLines(tr.startState))]
+    : [],
+)
+
+/**
+ * The Format command as one undoable transaction. Only the runs of blanks that change are edited, so the
+ * cursor, selection and marks stay between the same characters, and each breakpoint follows its statement
+ * (found by the line's last visible character) when a label is moved onto a line of its own. Null when the
+ * formatted text is the same, or differs in more than whitespace.
+ */
+export function formatTransaction(state: EditorState, formatted: string): TransactionSpec | null {
+  const changes = whitespaceChanges(state.doc.toString(), formatted)
+  if (!changes?.length) return null
+  const set = ChangeSet.of(changes, state.doc.length)
+  const doc = set.apply(state.doc)
+  const breakpoints = breakpointLines(state).map((n) => {
+    const line = state.doc.line(n)
+    const last = line.from + Math.max(0, line.text.trimEnd().length - 1)
+    return doc.lineAt(set.mapPos(last, 1)).number
+  })
+  return { changes: set, effects: setBreakpointLines.of(breakpoints), userEvent: 'format', annotations: isolateHistory.of('full') }
+}
+
 export function breakpointsChanged(a: EditorState, b: EditorState): boolean {
   return a.field(breakpointField) !== b.field(breakpointField)
 }
@@ -875,6 +911,7 @@ export function editorExtensions(isa: IsaPlugin, extra: Extension[] = []): Exten
     highlightActiveLineGutter(),
     highlightSpecialChars(),
     history(),
+    breakpointHistory,
     drawSelection(),
     EditorState.allowMultipleSelections.of(true),
     indentUnit.of('    '),

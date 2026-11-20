@@ -11,6 +11,7 @@ import type { IsaPlugin } from '../../core/isa'
 import { load, save } from '../storage'
 import DialogHost from './DialogHost.vue'
 import EditorPane from './EditorPane.vue'
+import { formatShortcut } from './editor'
 import { downloadBytes } from './files'
 import MemoryPanel from './MemoryPanel.vue'
 import RegisterPanel from './RegisterPanel.vue'
@@ -31,6 +32,7 @@ const picker = ref<HTMLInputElement | null>(null)
 type View = 'source' | 'text'
 const view = ref<View>(load<View>('ideView', 'source'))
 const fileName = ref(s.file.name)
+const formatKey = formatShortcut()
 
 function setView(v: View) {
   view.value = v
@@ -151,6 +153,11 @@ function goto(line: number, col: number) {
   editor.value?.goto(line, col)
 }
 
+function format() {
+  setView('source')
+  editor.value?.format()
+}
+
 function onKey(e: KeyboardEvent) {
   if (!root.value || root.value.offsetParent === null || s.dialog || question.value) return
   const actions: Record<string, () => void> = {
@@ -160,6 +167,13 @@ function onKey(e: KeyboardEvent) {
     F8: () => handle.control(() => s.back()),
     F9: () => s.pause(),
     F10: () => handle.control(() => s.reset()),
+  }
+  // Format, as in VS Code. Read the physical key: on macOS ⌥ turns e.key into "Ï". Text fields keep the keys.
+  if (e.code === 'KeyF' && e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && s.isa.format) {
+    if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select')) return
+    e.preventDefault()
+    format()
+    return
   }
   const act = actions[e.key]
   if (!act || e.ctrlKey || e.metaKey || e.altKey) return
@@ -183,7 +197,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <div ref="root" class="ide" @dragover.prevent @drop.prevent="onDrop">
-    <Toolbar class="tb" :handle="handle" @new="newFile" @open="picker?.click()" @download="download" @example="loadExample" />
+    <Toolbar class="tb" :handle="handle" @new="newFile" @open="picker?.click()" @download="download" @example="loadExample" @format="format" />
     <input ref="picker" type="file" accept=".asm,.s,.txt,text/plain" hidden @change="onPick" />
     <div class="cols">
       <section class="left">
@@ -194,7 +208,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           </div>
           <input v-model="fileName" class="inp name" :aria-label="t('文件名', 'File name')" spellcheck="false" @change="rename" @keydown.enter="rename" />
           <span class="small muted hint">{{
-            t('点行号设断点 · F5 运行 · F7 单步 · F8 上一步', 'Click a line number for a breakpoint · F5 run · F7 step · F8 back')
+            t(`点行号设断点 · F5 运行 · F7 单步 · F8 上一步 · ${formatKey} 格式化`, `Click a line number for a breakpoint · F5 run · F7 step · F8 back · ${formatKey} format`)
           }}</span>
         </div>
         <div class="code card">
