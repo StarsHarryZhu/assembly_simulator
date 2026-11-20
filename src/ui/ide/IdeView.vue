@@ -144,30 +144,14 @@ function download() {
 }
 
 /*
- * Closing or reloading the tab with code that was never downloaded. The browser asks here with its own
- * wording and buttons: pages cannot draw while they are being closed, and any text they give is ignored.
- * Timers wait while that question is open, so one that runs means the person chose to stay: then offer the
- * download in the page.
+ * Closing or reloading the tab with code that was never downloaded: the browser asks first, with its own
+ * wording and buttons (pages cannot draw while they are being closed, and any text they give is ignored).
+ * Browsers skip the question on a page the person never clicked or typed in.
  */
 function onBeforeUnload(e: BeforeUnloadEvent) {
   if (isUnchanged()) return
   e.preventDefault()
   e.returnValue = true // older browsers ask only when this is set
-  setTimeout(offerDownload, 0)
-}
-async function offerDownload() {
-  if (question.value || !root.value || root.value.offsetParent === null || isUnchanged()) return
-  const choice = await ask(
-    t(
-      `当前代码还没有下载。这个浏览器会自动留一份，但清除浏览数据或换一台电脑就没有了。\n现在把它下载成 ${downloadName()} 吗？`,
-      `This code has not been downloaded. This browser keeps a copy, but it is gone if the browsing data is cleared or on another computer.\nDownload it now as ${downloadName()}?`,
-    ),
-    [
-      { value: 'later', label: t('先不下载', 'Not now') },
-      { value: 'save', label: t('下载', 'Download'), primary: true },
-    ],
-  )
-  if (choice === 'save') download()
 }
 
 function rename() {

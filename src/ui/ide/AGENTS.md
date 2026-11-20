@@ -46,7 +46,8 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
 - Never use the browser's `confirm()`/`alert()`: embedded browsers may drop them. Ask with
   `ConfirmDialog.vue`. The one exception is closing or reloading the tab with code that was never
   downloaded: only the browser's own `beforeunload` question is possible there, so `IdeView.vue` asks for
-  it, and offers the download in the page when the person stays.
+  it. Nothing in the page reacts to that question: a timer or dialog started from `beforeunload` can run
+  while the page is already leaving and flash on screen.
 
 ## 3. Contents
 
