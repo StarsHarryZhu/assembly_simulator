@@ -5,18 +5,21 @@
  */
 import { lang, t } from '../i18n'
 import { computed, ref, watch } from 'vue'
-import { binGroups, hex8 } from '../../core/format'
+import { binGroups, hex8, hexAddr } from '../../core/format'
 import type { IsaPlugin } from '../../core/isa'
-import { load, save } from '../storage'
+import { isaKey, load, save } from '../storage'
 import BitFields from './BitFields.vue'
-import { parseWord } from './values'
+import { parseAddress, parseWord } from './values'
 
 const props = defineProps<{ isa: IsaPlugin; request: string | null }>()
 const isa = props.isa
-const text = ref<string>(load('decText', '0x01095020\n0x8d280004\n0x0c100003 @ 0x00400008\n0x46020800'))
-const baseText = ref<string>(load('decBase', hex8(isa.layout.textBase)))
-watch(text, (t) => save('decText', t))
-watch(baseText, (b) => save('decBase', b))
+const addrBits = isa.layout.addressBits ?? 32
+const hexA = (a: number) => hexAddr(a, addrBits)
+const key = (k: string) => isaKey(isa.id, k)
+const text = ref<string>(load(key('decText'), isa.samples.words))
+const baseText = ref<string>(load(key('decBase'), hexA(isa.layout.textBase)))
+watch(text, (t) => save(key('decText'), t))
+watch(baseText, (b) => save(key('decBase'), b))
 
 watch(
   () => props.request,
@@ -26,21 +29,10 @@ watch(
   { immediate: true },
 )
 
-const EXAMPLES: { word: string; note: string }[] = [
-  { word: '0x01095020', note: 'add' },
-  { word: '0x00094080', note: 'sll' },
-  { word: '0x8d280004', note: 'lw' },
-  { word: '0x1109fffe', note: 'beq' },
-  { word: '0x0c100003', note: 'jal' },
-  { word: '0x70a62002', note: 'mul' },
-  { word: '0x46020800', note: 'add.s' },
-  { word: '0x0000000c', note: 'syscall' },
-  { word: '0x00000000', note: 'nop' },
-]
+const EXAMPLES = isa.samples.decoderExamples
 
 const base = computed(() => {
-  const v = parseWord(baseText.value)
-  return v == null ? isa.layout.textBase : ((v >>> 0) & ~3) >>> 0
+  return parseAddress(baseText.value, addrBits) ?? isa.layout.textBase
 })
 
 const results = computed(() => {
@@ -52,8 +44,8 @@ const results = computed(() => {
     if (!src) continue
     const [wordPart, atPart] = src.split('@').map((s) => s.trim())
     if (atPart) {
-      const a = parseWord(atPart)
-      if (a != null) addr = ((a >>> 0) & ~3) >>> 0
+      const a = parseAddress(atPart, addrBits)
+      if (a != null) addr = a
     }
     const word = parseWord(wordPart!)
     if (word == null) {
@@ -64,7 +56,7 @@ const results = computed(() => {
     } else {
       out.push({ key: i, src, error: null, addr, word: word >>> 0, view: isa.decode(word >>> 0, addr) })
     }
-    addr = (addr + 4) >>> 0
+    addr = addrBits === 64 ? addr + 4 : (addr + 4) >>> 0
   }
   return out
 })
@@ -108,7 +100,7 @@ function add(word: string) {
           <b class="mono asm" :class="{ bad: !r.view.ok }">{{ r.view.text }}</b>
           <span class="mono hex">{{ hex8(r.word) }}</span>
           <span class="badge">{{ t(`${r.view.format} 格式`, `${r.view.format} format`) }}</span>
-          <span class="small muted mono">@ {{ hex8(r.addr) }}</span>
+          <span class="small muted mono">@ {{ hexA(r.addr) }}</span>
         </div>
         <BitFields :fields="r.view.fields" />
         <div class="bin mono small">

@@ -32,6 +32,13 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
   suggestions, modifier-click) uses the one line scan `scanLine` in `editor.ts`, which reads identifiers
   the way the assembler does (`.L1`, `a$b`). Labels and macros come from the shared `sourceIndex` state
   field, rebuilt once per document change; never rescan the document on hover, scroll or selection.
+- Comment and statement rules come from the plugin (`lineSyntax`): the line comment marker, a marker that
+  only counts as the first text of a line, block comments (the index records which lines start inside
+  one), and a statement separator. Registers are highlighted by the plugin's `isRegister` or its register
+  list, never by a `$` prefix. Operand positions count commas outside `[]` and `{}` (`splitOperands`).
+- Panels take widths from the plugin: register values with `hexBits` (cells show at most 64 bits; vector
+  registers open as lanes), stack slots of `layout.wordSize`, addresses with `hexAddr`, data kinds with
+  `kindTitle`, the stack and frame pointer names from the register list, the push hint from `samples`.
 - Label suggestions come from that index: a label in a data section (`language.dataSections`) is data and
   shows its declaration, any other is code and shows its line. Where an operand takes a label
   (`language.labelOperands`), the list opens before anything is typed, with the wanted kind first.
@@ -64,8 +71,9 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
 - `TerminalPane.vue` — program output with input prompt, messages, files.
 - `FilesPanel.vue` — files the program can open, with upload and download.
 - `files.ts` — saving bytes or text as a browser download.
-- `RegisterPanel.vue` — all register banks in one grid with use colours, last-step highlight, details.
-- `StackPanel.vue` — words from `$sp` up to the stack base, top first.
+- `RegisterPanel.vue` — all register banks in one grid with use colours, last-step highlight, details
+  (a 64-bit register also shows its low 32 bits; a vector register shows lanes of a chosen size and format).
+- `StackPanel.vue` — slots of the ISA's word size from the stack pointer up to the stack base, top first.
 - `MemoryPanel.vue` — data declarations, heap blocks and other written memory; rows in fixed `ch`
   columns, strings and `.space` as hex plus one character cell per byte; the "read as" choice per entry.
 - `memoryEntries.ts` — builds the memory panel's entries and summaries (cost independent of sizes):
@@ -77,5 +85,7 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
 ## 4. Progress
 
 Done: everything listed above, checked in the browser in both languages and themes, including
-⌘/Ctrl-click navigation to the instruction set tab and to label and macro definitions.
-Not done: nothing outstanding.
+⌘/Ctrl-click navigation to the instruction set tab and to label and macro definitions. The paths for
+64-bit registers, vector lanes, 64-bit addresses and GNU as comments are in place (ARMv9-A phase 0).
+Not done: those paths are seen in the browser only once the AArch64 plugin exists; SVE predicate and SME
+ZA views are planned with those extensions; GNU numeric local labels (`1:`, `1b`) are not indexed yet.

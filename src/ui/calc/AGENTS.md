@@ -11,7 +11,11 @@ words back into assembly with fields and notes.
 ## 2. Constraints
 
 - Encoding, decoding and running go through the plugin (`analyzeLine`, `buildLine`, `decode`,
-  `createMachine`); nothing here knows MIPS encodings.
+  `createMachine`); nothing here knows MIPS encodings. Starting lines, words and one-click examples come
+  from the plugin's `samples`; saved inputs are kept per ISA (`isaKey`).
+- Registers may be wider than 32 bits and addresses may be 64-bit: format with `hexBits`/`hexAddr` and
+  parse with `parseValue`/`parseAddress`, never with `hex8` or `>>> 0`.
+- The picker renders a page of mnemonics at a time (an ISA may have thousands).
 - Bit fields are drawn as components sized by bit count, never as text diagrams.
 - The instruction set tab can be opened from the editor with a `{ line, n }` request; the request replaces
   the one-line input and clears the per-label addresses, it never runs anything.
@@ -30,7 +34,7 @@ words back into assembly with fields and notes.
 - `DemoRunner.vue` — runs the analysed line step by step and shows registers and memory before and after.
 - `DecoderTab.vue` — machine words (one per line, optional `@ address`) to assembly.
 - `BitFields.vue` — one word as a row of fields with bits, value and meaning.
-- `values.ts` — parsing a word typed as hex, binary, decimal or (optionally) a float.
+- `values.ts` — parsing a word typed as hex, binary, decimal or (optionally) a float, wider values, and addresses.
 
 ## 4. Progress
 

@@ -4,7 +4,7 @@ import { Session } from '../../src/core/session'
 import { mips } from '../../src/isa/mips'
 import type { DataKind } from '../../src/core/isa'
 import { charOf } from '../../src/core/format'
-import { elementCount, memoryEntries } from '../../src/ui/ide/memoryEntries'
+import { elementCount, elementText, kindTitle, memoryEntries } from '../../src/ui/ide/memoryEntries'
 
 const exceptions = mips.examples.find((e) => e.id === 'exceptions')!.text.en
 
@@ -125,5 +125,15 @@ describe('memoryEntries', () => {
   it('still says an untouched .space is all zero, whatever it is read as', () => {
     const s = assembled('.data\nbuf: .space 64\n.text\nnop\n')
     for (const view of ['space', 'word', 'asciiz', 'double'] as DataKind[]) expect(entries(s, new Map([['lbuf', view]]))[0]!.summary).toBe('64 bytes, all zero')
+  })
+
+  it('reads 8-byte integers, and names kinds with the directives of the ISA', () => {
+    const s = assembled('.data\nw: .word 0xfffffffe, 0xffffffff, 7, 0\n.text\nnop\n')
+    const at = s.result!.program!.symbols['w']!
+    expect(elementText(mips, s.machine!, 'dword', at)).toEqual({ hex: '0xfffffffffffffffe', value: '-2' })
+    expect(elementText(mips, s.machine!, 'dword', at + 8).value).toBe('7')
+    expect(kindTitle(mips, 'half')).toBe('.half')
+    const gas = { ...mips, language: { ...mips.language, dataDirectives: { half: '.hword', dword: '.quad' } } }
+    expect([kindTitle(gas, 'half'), kindTitle(gas, 'dword'), kindTitle(gas, 'word')]).toEqual(['.hword', '.quad', '.word'])
   })
 })

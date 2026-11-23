@@ -12,6 +12,8 @@ the calculator's one-line analysis.
 
 - A plugin folder may import from `src/core` but never from `src/ui` or another plugin.
 - The UI only sees what the registry exports; plugin internals stay private to their folder.
+- A plugin still being built is `available` only in the development build (`import.meta.env.DEV`); the
+  published site lists it as not yet available. The app re-creates its panels when the ISA changes.
 
 ## 3. Contents
 

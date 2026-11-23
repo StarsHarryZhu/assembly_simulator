@@ -18,6 +18,7 @@ import {
   scanLine,
   setBreakpointLines,
   sourceIndex,
+  splitOperands,
 } from '../../src/ui/ide/editor'
 
 const sections = new Set(mips.language.sections)
@@ -35,6 +36,8 @@ describe('scanLine', () => {
         { text: 'done', from: 22, to: 26, role: 'ref' },
       ],
       section: false,
+      comment: 29,
+      inBlock: false,
     })
     expect(words('msg: .asciiz "a: b, c"', 'ref')).toEqual([])
     expect(scanLine('  .text 0x00400000', '#', sections).section).toBe(true)
@@ -46,6 +49,33 @@ describe('scanLine', () => {
     expect(words('.L1: j .L1', 'ref')).toEqual(['.L1'])
     expect(words('a$b: b a$b', 'ref')).toEqual(['a$b'])
     expect(scanLine('.L1: nop', '#', sections).section).toBe(false)
+  })
+
+  // GNU as on AArch64: '//' comments, '#' only as the first text of a line, C block comments, ';' between statements.
+  const gas = { comment: '//', lineStartComment: '#', block: ['/*', '*/'] as [string, string], separator: ';' }
+  const gasWords = (text: string, role: string, inBlock = false) =>
+    scanLine(text, gas, sections, inBlock)
+      .pieces.filter((p) => p.role === role)
+      .map((p) => p.text)
+
+  it('takes the comment, block comment and statement separator rules of the ISA', () => {
+    expect(gasWords('loop: add x0, x0, #1 // x0 += 1', 'ref')).toEqual(['x0', 'x0'])
+    expect(scanLine('add x0, x0, #1 // more', gas, sections).comment).toBe(15)
+    expect(scanLine('  # a line comment', gas, sections).comment).toBe(2)
+    expect(gasWords('mov x0, #1 /* one */ ; b done', 'head')).toEqual(['mov', 'b'])
+    expect(gasWords('mov x0, #1 /* one */ ; b done', 'ref')).toEqual(['x0', 'done'])
+    const open = scanLine('nop /* starts here', gas, sections)
+    expect([open.comment, open.inBlock]).toEqual([4, true])
+    expect(scanLine('still inside', gas, sections, true).pieces).toEqual([])
+    expect(gasWords('ends */ b out', 'head', true)).toEqual(['b'])
+  })
+})
+
+describe('splitOperands', () => {
+  it('splits at commas outside brackets and braces only', () => {
+    expect(splitOperands(' x0, [x1, #8]!')).toEqual([' x0', ' [x1, #8]!'])
+    expect(splitOperands(' {v0.4s, v1.4s}, [x0]')).toEqual([' {v0.4s, v1.4s}', ' [x0]'])
+    expect(splitOperands(' $t0, 4($t1)')).toEqual([' $t0', ' 4($t1)'])
   })
 })
 

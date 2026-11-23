@@ -22,7 +22,7 @@ import {
   type CompletionResult,
 } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab, invertedEffects, isolateHistory } from '@codemirror/commands'
-import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
+import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting, type StringStream } from '@codemirror/language'
 import { lintGutter } from '@codemirror/lint'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { ChangeSet, EditorState, Facet, RangeSet, StateEffect, StateField, type Extension, type TransactionSpec } from '@codemirror/state'
@@ -47,17 +47,45 @@ import { sectionIndent, whitespaceChanges } from '../../core/source'
 
 /* ---------------------------------------------------------------- language */
 
+/** The ISA's register test for highlighting: its own, or membership in its register list. */
+function registerTest(isa: IsaPlugin): (word: string) => boolean {
+  if (isa.language.isRegister) return isa.language.isRegister
+  const names = new Set(isa.language.registers.map((r) => r.toLowerCase()))
+  return (word) => names.has(word.toLowerCase())
+}
+
 function asmLanguage(isa: IsaPlugin) {
   const mnemonics = new Set(isa.language.mnemonics)
   const sections = new Set(isa.language.sections)
-  const comment = isa.language.commentChar
-  return StreamLanguage.define<object>({
+  const { commentChar: comment, lineStartComment, blockComment: block } = isa.language
+  const isRegister = registerTest(isa)
+  /** The rest of a block comment from the stream's position: to its end, or to the end of the line. */
+  const blockRest = (stream: StringStream, state: { block: boolean }) => {
+    const end = stream.string.indexOf(block![1], stream.pos)
+    if (end < 0) stream.skipToEnd()
+    else {
+      stream.pos = end + block![1].length
+      state.block = false
+    }
+    return 'comment'
+  }
+  return StreamLanguage.define<{ block: boolean }>({
     name: 'asm',
-    startState: () => ({}),
-    token(stream) {
+    startState: () => ({ block: false }),
+    copyState: (state) => ({ block: state.block }),
+    token(stream, state) {
+      if (state.block) return blockRest(stream, state)
       if (stream.eatSpace()) return null
       const ch = stream.peek()!
-      if (ch === comment) {
+      if (lineStartComment && !stream.string.slice(0, stream.pos).trim() && stream.match(lineStartComment)) {
+        stream.skipToEnd()
+        return 'comment'
+      }
+      if (block && stream.match(block[0])) {
+        state.block = true
+        return blockRest(stream, state)
+      }
+      if (comment && stream.match(comment)) {
         stream.skipToEnd()
         return 'comment'
       }
@@ -74,11 +102,16 @@ function asmLanguage(isa: IsaPlugin) {
       }
       if (stream.match(/^[-+]?(0x[0-9a-fA-F]+|0b[01]+|\d+(\.\d+)?([eE][-+]?\d+)?)\b/)) return 'number'
       if (stream.match(/^%\w+/)) return 'atom'
+      // An immediate's '#' (GNU as on ARM) reads with its number.
+      if (ch === '#') {
+        stream.next()
+        return 'number'
+      }
       // Identifiers as the assembler reads them: registers ($t0), directives (.word), labels (.L1, a$b).
       if (stream.match(/^\.?[A-Za-z_$][\w.$]*/)) {
         const word = stream.current()
         if (/^[ \t]*:/.test(stream.string.slice(stream.pos))) return 'labelName'
-        if (word[0] === '$') return 'variableName.special'
+        if (isRegister(word)) return 'variableName.special'
         if (word[0] === '.') return sections.has(word.toLowerCase()) ? 'namespace' : 'meta'
         return mnemonics.has(word.toLowerCase()) ? 'keyword' : 'variableName'
       }
@@ -86,7 +119,10 @@ function asmLanguage(isa: IsaPlugin) {
       return null
     },
     // Typing one of these inserts its partner, as in VS Code; typing the partner then steps over it.
-    languageData: { commentTokens: { line: comment }, closeBrackets: { brackets: ['(', '[', '{', "'", '"'] } },
+    languageData: {
+      commentTokens: { line: comment, ...(block ? { block: { open: block[0], close: block[1] } } : {}) },
+      closeBrackets: { brackets: ['(', '[', '{', "'", '"'] },
+    },
   })
 }
 
@@ -104,8 +140,25 @@ const highlight = HighlightStyle.define([
 
 /* ---------------------------------------------------------------- one scan per line, one index per document */
 
-interface AsmSyntax {
+/** How an ISA writes comments and statements, as far as the line scan needs it. */
+export interface LineSyntax {
+  /** Starts a comment that runs to the end of the line. */
   comment: string
+  /** Starts a comment only as the first text of a line. */
+  lineStartComment?: string
+  /** Block comment delimiters; such a comment may span lines. */
+  block?: [string, string]
+  /** Separates statements on one line. */
+  separator?: string
+}
+
+/** The line syntax of an ISA. */
+export function lineSyntax(isa: IsaPlugin): LineSyntax {
+  const l = isa.language
+  return { comment: l.commentChar, lineStartComment: l.lineStartComment, block: l.blockComment, separator: l.statementSeparator }
+}
+
+interface AsmSyntax extends LineSyntax {
   /** Section directives, lower case. */
   sections: Set<string>
   /** The section directives whose labels name data, lower case. */
@@ -129,6 +182,10 @@ export interface ScannedLine {
   pieces: Piece[]
   /** The head is a section directive (`.text`, `.data`, …). */
   section: boolean
+  /** Where a comment starts on this line, or null. A block comment that closes on the line does not count. */
+  comment: number | null
+  /** The line ends inside a block comment. */
+  inBlock: boolean
 }
 
 /** Numbers, identifiers as the assembler reads them (`$t0`, `.word`, `.L1`, `a$b`), macro parameters, any other character. */
@@ -138,19 +195,54 @@ const IDENT = /^\.?[A-Za-z_$]/
 /**
  * The one scan behind every editor feature (pink label references, section bands, label suggestions,
  * modifier-click): the words of a line with their roles, skipping comments, strings and character literals.
+ * `inBlock` says the line starts inside a block comment; the result says whether it ends inside one.
+ * After a statement separator the next word is a head again.
  */
-export function scanLine(text: string, comment: string, sections: Set<string>): ScannedLine {
+export function scanLine(text: string, syntax: LineSyntax | string, sections: Set<string>, inBlock = false): ScannedLine {
+  const { comment, lineStartComment, block, separator } = typeof syntax === 'string' ? { comment: syntax } : syntax
   const pieces: Piece[] = []
   let section = false
   let head = false
+  let first = true
+  let commentAt: number | null = null
   let i = 0
   while (i < text.length) {
+    if (inBlock) {
+      const end = text.indexOf(block![1], i)
+      if (end < 0) break
+      inBlock = false
+      i = end + block![1].length
+      continue
+    }
     const c = text[i]!
     if (c === ' ' || c === '\t') {
       i++
       continue
     }
-    if (comment && text.startsWith(comment, i)) break
+    if (first && lineStartComment && text.startsWith(lineStartComment, i)) {
+      commentAt = i
+      break
+    }
+    first = false
+    if (block && text.startsWith(block[0], i)) {
+      const end = text.indexOf(block[1], i + block[0].length)
+      if (end < 0) {
+        commentAt = i
+        inBlock = true
+        break
+      }
+      i = end + block[1].length
+      continue
+    }
+    if (comment && text.startsWith(comment, i)) {
+      commentAt = i
+      break
+    }
+    if (separator && c === separator) {
+      head = false
+      i++
+      continue
+    }
     if (c === '"' || c === "'") {
       i++
       while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1
@@ -176,7 +268,7 @@ export function scanLine(text: string, comment: string, sections: Set<string>): 
     }
     i = end
   }
-  return { pieces, section }
+  return { pieces, section, comment: commentAt, inBlock }
 }
 
 interface Location {
@@ -196,21 +288,12 @@ export interface LabelDef extends Location {
 export interface SourceIndex {
   labels: Map<string, LabelDef>
   macros: Map<string, Location>
+  /** Lines (1-based) that start inside a block comment. */
+  blockLines: Set<number>
 }
 
-/** A statement's text from `from` on, without the trailing comment (comment characters in strings stay). */
-function statementText(text: string, from: number, comment: string): string {
-  let quote = ''
-  for (let i = from; i < text.length; i++) {
-    const c = text[i]!
-    if (quote) {
-      if (c === '\\') i++
-      else if (c === quote) quote = ''
-    } else if (c === '"' || c === "'") quote = c
-    else if (comment && text.startsWith(comment, i)) return text.slice(from, i).trim()
-  }
-  return text.slice(from).trim()
-}
+/** A statement's text from `from` on, without the trailing comment. */
+const statementText = (text: string, from: number, scan: ScannedLine) => text.slice(from, scan.comment ?? text.length).trim()
 
 const SECTION_HEAD = /^\s*(\.[A-Za-z]\w*)/
 
@@ -219,22 +302,32 @@ const SECTION_HEAD = /^\s*(\.[A-Za-z]\w*)/
  * Only lines with a colon, a section directive or `.macro` are scanned, plus the line after a lone label.
  */
 function buildIndex(state: EditorState): SourceIndex {
-  const { comment, sections, dataSections } = state.facet(asmSyntax)
+  const syntax = state.facet(asmSyntax)
+  const { sections, dataSections, block } = syntax
   const labels = new Map<string, LabelDef>()
   const macros = new Map<string, Location>()
+  const blockLines = new Set<number>()
   let inData = false
+  let inBlock = false
   let waiting: LabelDef[] = [] // lone labels whose statement is on a later line
   let n = 0
   for (const iter = state.doc.iterLines(); !iter.next().done; ) {
     n++
     const text = iter.value
-    const section = SECTION_HEAD.exec(text)?.[1]?.toLowerCase()
-    if (section && sections.has(section)) inData = dataSections.has(section)
-    if (!waiting.length && !text.includes(':') && !/\.macro/i.test(text)) continue
-    const { pieces } = scanLine(text, comment, sections)
+    const started = inBlock
+    if (started) blockLines.add(n)
+    // Lines with nothing to index are skipped, unless a block comment could open or close on them.
+    if (!waiting.length && !text.includes(':') && !/\.macro/i.test(text) && !SECTION_HEAD.test(text)) {
+      if (block && (inBlock || text.includes(block[0]))) inBlock = scanLine(text, syntax, sections, inBlock).inBlock
+      continue
+    }
+    const scan = scanLine(text, syntax, sections, started)
+    inBlock = scan.inBlock
+    const { pieces } = scan
     const h = pieces.findIndex((p) => p.role === 'head')
+    if (h >= 0 && sections.has(pieces[h]!.text.toLowerCase())) inData = dataSections.has(pieces[h]!.text.toLowerCase())
     if (h >= 0 && waiting.length && !sections.has(pieces[h]!.text.toLowerCase())) {
-      const decl = statementText(text, pieces[h]!.from, comment)
+      const decl = statementText(text, pieces[h]!.from, scan)
       for (const d of waiting) d.decl = decl
       waiting = []
     }
@@ -242,13 +335,13 @@ function buildIndex(state: EditorState): SourceIndex {
     if (first?.role === 'label' && !labels.has(first.text)) {
       const def: LabelDef = { line: n, col: first.from, kind: inData ? 'data' : 'code', decl: '' }
       labels.set(first.text, def)
-      if (h >= 0) def.decl = statementText(text, pieces[h]!.from, comment)
+      if (h >= 0) def.decl = statementText(text, pieces[h]!.from, scan)
       else waiting.push(def)
     }
     const name = pieces[h + 1]
     if (h >= 0 && pieces[h]!.text.toLowerCase() === '.macro' && name && !macros.has(name.text)) macros.set(name.text, { line: n, col: name.from })
   }
-  return { labels, macros }
+  return { labels, macros, blockLines }
 }
 
 /** Rebuilt once per document change and shared, so hovering and highlighting never rescan the file. */
@@ -267,13 +360,14 @@ function labelAndSectionMarks(): Extension {
   const refMark = Decoration.mark({ class: 'cm-label-ref' })
   const sectionLine = Decoration.line({ class: 'cm-section-line' })
   const build = (view: EditorView): DecorationSet => {
-    const { comment, sections } = view.state.facet(asmSyntax)
-    const defined = sourceIndex(view.state).labels
+    const syntax = view.state.facet(asmSyntax)
+    const index = sourceIndex(view.state)
+    const defined = index.labels
     const ranges = []
     for (const { from, to } of view.visibleRanges) {
       for (let pos = from; pos <= to; ) {
         const line = view.state.doc.lineAt(pos)
-        const scan = scanLine(line.text, comment, sections)
+        const scan = scanLine(line.text, syntax, syntax.sections, index.blockLines.has(line.number))
         if (scan.section) ranges.push(sectionLine.range(line.from))
         for (const p of scan.pieces) if (p.role === 'ref' && defined.has(p.text)) ranges.push(refMark.range(line.from + p.from, line.from + p.to))
         pos = line.to + 1
@@ -337,7 +431,8 @@ export function navigationTarget(state: EditorState, pos: number, isa: IsaPlugin
   if (pos < 0 || pos > state.doc.length) return null
   const line = state.doc.lineAt(pos)
   const off = pos - line.from
-  const { pieces } = scanLine(line.text, isa.language.commentChar, state.facet(asmSyntax).sections)
+  const syntax = state.facet(asmSyntax)
+  const { pieces } = scanLine(line.text, syntax, syntax.sections, sourceIndex(state).blockLines.has(line.number))
   const hit = pieces.find((p) => off >= p.from && off < p.to) ?? pieces.find((p) => off === p.to)
   if (!hit || hit.role === 'label') return null
   const at = { from: line.from + hit.from, to: line.from + hit.to }
@@ -528,7 +623,30 @@ function el(tag: string, cls: string, text?: string): HTMLElement {
   return e
 }
 
+/**
+ * Operands split at the commas between them; commas inside `[…]` (an ARM address) or `{…}` (a register list)
+ * belong to one operand. Parentheses do not group, so MIPS macro arguments count as before.
+ */
+export function splitOperands(text: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '[' || c === '{') depth++
+    else if ((c === ']' || c === '}') && depth > 0) depth--
+    else if (c === ',' && depth === 0) {
+      parts.push(text.slice(start, i))
+      start = i + 1
+    }
+  }
+  parts.push(text.slice(start))
+  return parts
+}
+
 export function completer(isa: IsaPlugin) {
+  const syntax = lineSyntax(isa)
+  const sectionSet = new Set(isa.language.sections.map((d) => d.toLowerCase()))
   const byName = new Map<string, string[]>()
   const descs = new Map<string, Text>()
   for (const e of isa.catalog) {
@@ -593,12 +711,11 @@ export function completer(isa: IsaPlugin) {
   }
   const registers = (): Completion[] => isa.language.registers.map((r) => ({ label: r, type: 'register', detail: regNotes.get(r)?.() ?? '' }))
   // Named registers can be typed without their prefix: "t0" offers $t0 and writes it in full. Numbered ones
-  // ($4) still need it, so a plain number never turns into a register.
-  const bare = isa.language.registers
-    .map((r) => ({ r, name: r.replace(/^[^\w]+/, '') }))
-    .filter(({ r, name }) => name !== r && /^[A-Za-z]/.test(name))
+  // ($4) still need it, so a plain number never turns into a register. ISAs without a prefix (x0, v0) are
+  // offered as they are.
+  const bare = isa.language.registers.map((r) => ({ r, name: r.replace(/^[^\w]+/, '') })).filter(({ name }) => /^[A-Za-z]/.test(name))
   const bareRegisters = (boost: number): Completion[] =>
-    bare.map(({ r, name }) => ({ label: name, displayLabel: r, apply: r, type: 'register', detail: regNotes.get(r)?.() ?? '', boost }))
+    bare.map(({ r, name }) => ({ label: name, ...(name !== r ? { displayLabel: r } : {}), apply: r, type: 'register', detail: regNotes.get(r)?.() ?? '', boost }))
   // The matched characters are found in the bare name; shift them past the prefix shown before it.
   const getMatch = (c: Completion, matched: readonly number[] = []) => matched.map((n) => n + (c.displayLabel ?? c.label).length - c.label.length)
   // Which operands of each mnemonic take a register, from the instruction forms (in `lw $t1, -100($t2)`
@@ -607,12 +724,9 @@ export function completer(isa: IsaPlugin) {
   const registerSlots = new Map<string, Set<number>>()
   for (const e of isa.catalog) {
     const slots = registerSlots.get(e.mnemonic) ?? new Set<number>()
-    e.example
-      .slice(e.mnemonic.length)
-      .split(',')
-      .forEach((operand, at) => {
-        if (operand.match(/[$\w.]+/g)?.some((w) => known.has(w))) slots.add(at)
-      })
+    splitOperands(e.example.slice(e.mnemonic.length)).forEach((operand, at) => {
+      if (operand.match(/[$\w.]+/g)?.some((w) => known.has(w))) slots.add(at)
+    })
     registerSlots.set(e.mnemonic, slots)
   }
   // Directives: the title as detail, and the reference row (example, meaning, caveats) as details panel.
@@ -641,7 +755,7 @@ export function completer(isa: IsaPlugin) {
   const operandAt = (before: string): { mnemonic: string; at: number; text: string } | null => {
     const m = /^\s*(?:[.\w$]+\s*:\s*)*([.\w]+)\s+(.*)$/.exec(before)
     if (!m) return null
-    const parts = m[2]!.split(',')
+    const parts = splitOperands(m[2]!)
     return { mnemonic: m[1]!.toLowerCase(), at: parts.length - 1, text: parts[parts.length - 1]!.trim() }
   }
   const wantedKind = (op: ReturnType<typeof operandAt>): LabelKind | null => (op && isa.language.labelOperands[op.mnemonic]?.[op.at]) ?? null
@@ -671,7 +785,8 @@ export function completer(isa: IsaPlugin) {
    */
   const operands = (state: EditorState, from: number, before: string, text: string): CompletionResult | null => {
     const op = operandAt(before)
-    const base = !!op && /\([^)]*$/.test(op.text)
+    // Inside `4(` (MIPS) or `[` (ARM) the operand is a base register.
+    const base = !!op && (/\([^)]*$/.test(op.text) || /\[[^\]]*$/.test(op.text))
     const wants = base ? null : wantedKind(op)
     const options = labelOptions(state, wants)
     const takesRegister = !op || base || (!op.mnemonic.startsWith('.') && (registerSlots.get(op.mnemonic)?.has(op.at) ?? true))
@@ -682,8 +797,12 @@ export function completer(isa: IsaPlugin) {
   return (ctx: CompletionContext): CompletionResult | null => {
     const word = ctx.matchBefore(/[$.%]?[\w.$]*/)
     if (!word) return null
-    const before = ctx.state.sliceDoc(ctx.state.doc.lineAt(ctx.pos).from, word.from)
-    if (before.includes(isa.language.commentChar) || /["']/.test(before)) return null
+    const line = ctx.state.doc.lineAt(ctx.pos)
+    let before = ctx.state.sliceDoc(line.from, word.from)
+    const scan = scanLine(before, syntax, sectionSet, sourceIndex(ctx.state).blockLines.has(line.number))
+    if (scan.comment != null || scan.inBlock || /["']/.test(before)) return null
+    // Only the statement being typed counts.
+    if (syntax.separator) before = before.slice(before.lastIndexOf(syntax.separator) + 1)
     if (word.from === word.to && !ctx.explicit) {
       // Nothing typed yet: open the labels only where the operand takes one (after `la $a0, `, `j `).
       const op = operandAt(before)
@@ -953,7 +1072,7 @@ export function editorExtensions(isa: IsaPlugin, extra: Extension[] = []): Exten
     asmLanguage(isa),
     syntaxHighlighting(highlight),
     asmSyntax.of({
-      comment: isa.language.commentChar,
+      ...lineSyntax(isa),
       sections: new Set(isa.language.sections.map((d) => d.toLowerCase())),
       dataSections: new Set(isa.language.dataSections.map((d) => d.toLowerCase())),
     }),

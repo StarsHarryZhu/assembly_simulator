@@ -82,4 +82,10 @@ Not done / known gaps:
   above 21, `.eqv` values that use macro parameters, and sbrk requests that wrap past 0x7fffffff.
 - After a language switch, console notes already printed by a running program stay in the old language.
 
-Goals: ARM64 and x86-64 plugins behind the same `IsaPlugin` interface.
+In progress: an ARMv9-A (AArch64) plugin covering the A64 base, floating point, Advanced SIMD, SVE/SVE2
+and SME/SME2, with Linux system calls, a built-in C library and EL1 exception vectors. It is built in
+phases and stays selectable only in the development build until all of them are done. Phase 0 is done:
+the core contracts and panels handle 64-bit registers and addresses, vector registers, and GNU as
+comments, with MIPS unchanged.
+
+Goals: the AArch64 plugin above, then x86-64, behind the same `IsaPlugin` interface.

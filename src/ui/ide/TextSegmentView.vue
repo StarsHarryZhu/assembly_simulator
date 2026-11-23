@@ -2,7 +2,7 @@
 /** The assembled text segment: address, machine code, basic instruction and the source line it came from. */
 import { t } from '../i18n'
 import { computed, nextTick, ref, watch } from 'vue'
-import { hex8 } from '../../core/format'
+import { hex8, hexAddr } from '../../core/format'
 import type { SessionHandle } from './useSession'
 
 const props = defineProps<{ handle: SessionHandle }>()
@@ -17,7 +17,7 @@ const rows = computed(() => {
   if (!p) return null
   return p.instructions.map((i) => ({
     addr: i.addr,
-    a: hex8(i.addr),
+    a: hexAddr(i.addr, s.isa.layout.addressBits ?? 32),
     w: hex8(i.word),
     basic: i.basic,
     line: i.part === 0 ? i.line : null,

@@ -17,8 +17,13 @@ export interface RegisterSpec {
   name: string
   /** Architectural number shown next to the name, when the ISA has one. */
   number?: number
-  bits: 32 | 64
-  kind: 'int' | 'float' | 'flag' | 'special'
+  /** Width in bits. A register whose width follows a setting (an SVE Z register) gives its widest. */
+  bits: number
+  /**
+   * int, float, flag and special registers hold one value (readRegister). vector, predicate and matrix
+   * registers are read as bytes (readRegisterBytes): a SIMD or SVE vector, an SVE predicate, the SME ZA array.
+   */
+  kind: 'int' | 'float' | 'flag' | 'special' | 'vector' | 'predicate' | 'matrix'
   /** Writes are discarded ($zero, xzr). */
   hardwired?: boolean
   /** Touched by every step (the PC); not coloured by read/write status. */
@@ -51,6 +56,12 @@ export interface MemoryLayout {
   stackBase: number
   stackGrowsDown: boolean
   wordSize: number
+  /**
+   * 32 (the default): addresses are unsigned 32-bit numbers. 64: addresses are numbers below 2^49; those
+   * at or above 2^48 stand for the top half of the address space (0xffff000000000000 + the rest), where
+   * kernels live. See vaOf in format.ts.
+   */
+  addressBits?: 32 | 64
 }
 
 export interface Diagnostic {
@@ -84,7 +95,8 @@ export interface ProgramInstruction {
   parts: number
 }
 
-export type DataKind = 'word' | 'half' | 'byte' | 'ascii' | 'asciiz' | 'space' | 'float' | 'double'
+/** dword is an 8-byte integer (.quad, .xword, .dword). */
+export type DataKind = 'dword' | 'word' | 'half' | 'byte' | 'ascii' | 'asciiz' | 'space' | 'float' | 'double'
 
 /** One data-segment declaration; the memory panel shows one entry per declaration. */
 export interface DataDeclaration {
@@ -216,6 +228,8 @@ export interface Machine {
   /** Supply what the pending request asked for, then step() completes the waiting instruction. */
   resolve(value: string | number | DialogResponse | null): void
   readRegister(id: number): RegValue
+  /** The bytes of a vector, predicate or matrix register, least significant first. */
+  readRegisterBytes?(id: number): Uint8Array
   registerStatus(id: number): RegStatus
   readByte(addr: number): number
   readWord(addr: number): number
@@ -233,9 +247,9 @@ export interface Machine {
    */
   run(limit: number, breakpoints: ReadonlySet<number>, skipFirstBreak?: boolean): { steps: number; stop: 'halted' | 'waiting' | 'breakpoint' | 'limit' | 'sleep' }
   /** Set a register before running (the calculator's demo uses it). Not recorded in the undo log. */
-  setRegister(id: number, value: number): void
+  setRegister(id: number, value: RegValue): void
   /** Extra data-memory regions created at run time (heap blocks), shown as memory entries. */
-  heapBlocks(): { addr: number; size: number; index: number }[]
+  heapBlocks(): { addr: number; size: number; index: number; /** How it was made, e.g. "sbrk", "malloc". */ note?: string }[]
   /** Pause the most recent step asked for (sleep or sound syscalls), in ms. */
   readonly lastSleep: number
 }
@@ -281,7 +295,8 @@ export interface DecodedView {
 
 /** One operand of a single assembly line, as the calculator edits it. */
 export interface LineOperand {
-  kind: 'reg' | 'freg' | 'c0' | 'int' | 'label'
+  /** What the ISA calls this kind of operand, e.g. "reg", "freg", "int", "label", "mem". */
+  kind: string
   /** As written in the line. */
   text: string
   /** What the form expects here, e.g. "-32768 到 32767 的整数". */
@@ -312,7 +327,7 @@ export interface LineAnalysis {
   /** A tiny program holding the line, for the step-by-step demo. */
   program: Program | null
   /** Registers the expansion reads before writing them (the demo's starting values), with defaults. */
-  inputs: { id: number; value: number }[]
+  inputs: { id: number; value: RegValue }[]
 }
 
 /** An example program, written once per language (the code is the same; comments differ). */
@@ -385,7 +400,18 @@ export interface IsaPlugin {
      * kind fits there: a branch or jump target ('code') or an address in memory ('data').
      */
     labelOperands: Record<string, Record<number, LabelKind>>
+    /** Starts a comment that runs to the end of the line ('#' in MIPS, '//' in GNU as for AArch64). */
     commentChar: string
+    /** Starts a comment only as the first text of a line (GNU as for AArch64: '#', which elsewhere marks an immediate). */
+    lineStartComment?: string
+    /** Opening and closing delimiters of block comments, which may span lines (C-style in GNU as). */
+    blockComment?: [string, string]
+    /** Separates statements written on one line (GNU as: ';'). */
+    statementSeparator?: string
+    /** Whether a word is a register, for highlighting. Default: it is listed in `registers`. */
+    isRegister?: (word: string) => boolean
+    /** The directive that declares each kind of data, for the memory panel. Default: the MIPS names. */
+    dataDirectives?: Partial<Record<DataKind, string>>
   }
   catalog: CatalogEntry[]
   /** Catalog groups in display order. */
@@ -393,6 +419,19 @@ export interface IsaPlugin {
   examples: ExampleProgram[]
   /** Longer references for instructions a one-line description cannot explain. */
   references?: ReferenceTable[]
+  /** Starting content of the instruction set and disassembler tabs. */
+  samples: {
+    /** The line the instruction set tab opens with. */
+    line: string
+    /** The disassembler's starting words, one per line (`0x… @ address` allowed). */
+    words: string
+    /** Words offered as one-click examples in the disassembler, with the mnemonic they decode to. */
+    decoderExamples: { word: string; note: string }[]
+    /** An instruction that pushes onto the stack, for the empty-stack hint, e.g. "addi $sp, $sp, -4". */
+    push: string
+  }
+  /** The register that always reads zero, if any; the calculator's demo leaves it out of the inputs. */
+  zeroRegister?: number
   assemble(source: SourceFile, options?: AssembleOptions): AssembleResult
   createMachine(program: Program, env: Environment): Machine
   /** Decode one instruction word at an address. */

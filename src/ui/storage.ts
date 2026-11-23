@@ -18,3 +18,11 @@ export function save(key: string, value: unknown): void {
     /* storage full or blocked: preferences are best-effort */
   }
 }
+
+/**
+ * A preference key for one ISA. MIPS, the first ISA, keeps the unscoped names it has always used, so the
+ * preferences people already saved stay theirs.
+ */
+export function isaKey(isaId: string, key: string): string {
+  return isaId === 'mips32' ? key : `${isaId}.${key}`
+}

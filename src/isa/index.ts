@@ -1,4 +1,7 @@
-/** Architecture registry. Only MIPS32 exists today; ARM and x86-64 are listed so the selector shows the plan. */
+/**
+ * Architecture registry. Only MIPS32 exists today; ARM and x86-64 are listed so the selector shows the plan.
+ * An ISA still being built is `available` only in the development build (`import.meta.env.DEV`).
+ */
 import type { IsaPlugin } from '../core/isa'
 import { mips } from './mips'
 

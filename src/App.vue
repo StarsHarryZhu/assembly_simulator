@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { LOCALES, T, type Text } from './core/i18n'
 import { lang, t, tx } from './ui/i18n'
-import { ref, watch } from 'vue'
-import { isas, defaultIsa } from './isa'
+import { computed, ref, watch } from 'vue'
+import { isas, defaultIsa, getIsa } from './isa'
 import { APP_VERSION } from './version'
 import { load, save } from './ui/storage'
 import IdeView from './ui/ide/IdeView.vue'
@@ -20,16 +20,25 @@ const tab = ref<Tab>(load<Tab>('tab', 'ide'))
 if (!TABS.some((t) => t.id === tab.value)) tab.value = 'ide'
 watch(tab, (t) => save('tab', t))
 
-const isa = defaultIsa
+/** The architecture being used; panels read it once, so switching re-creates them (see the :key below). */
+const isaId = ref<string>(load('isa', defaultIsa.id))
+const isa = computed(() => (isas.some((e) => e.id === isaId.value && e.available) ? getIsa(isaId.value) : null) ?? defaultIsa)
+function pickIsa(id: string) {
+  if (!isas.some((e) => e.id === id && e.available)) return
+  isaId.value = id
+  save('isa', id)
+}
 
 type Theme = 'auto' | 'light' | 'dark'
 const theme = ref<Theme>(load<Theme>('theme', 'auto'))
 const THEME_LABEL: Record<Theme, Text> = { auto: T('跟随系统', 'System'), light: T('浅色', 'Light'), dark: T('深色', 'Dark') }
 
 watch(
-  lang,
+  [lang, isa],
   () => {
-    document.title = t('汇编模拟器 · MIPS32', 'Assembly Simulator · MIPS32')
+    // "MIPS32 (MARS 4.5)" → "MIPS32"
+    const name = isa.value.displayName.split(' ')[0]
+    document.title = t(`汇编模拟器 · ${name}`, `Assembly Simulator · ${name}`)
   },
   { immediate: true },
 )
@@ -71,7 +80,7 @@ function instructionRequestUsed(n: number) {
         <span class="title">{{ t('汇编模拟器', 'Assembly Simulator') }}</span>
         <label class="arch">
           <span class="sr">{{ t('架构', 'Architecture') }}</span>
-          <select class="inp" :value="isa.id" :aria-label="t('架构', 'Architecture')">
+          <select class="inp" :value="isa.id" :aria-label="t('架构', 'Architecture')" @change="pickIsa(($event.target as HTMLSelectElement).value)">
             <option v-for="p in isas" :key="p.id" :value="p.id" :disabled="!p.available">
               {{ p.displayName }}{{ p.available ? '' : t('（未实现）', ' (not yet)') }}
             </option>
@@ -99,9 +108,9 @@ function instructionRequestUsed(n: number) {
       <span class="version" :title="t('当前版本', 'Current version')">v{{ APP_VERSION }}</span>
     </header>
     <main class="body">
-      <IdeView v-show="tab === 'ide'" :isa="isa" @open-in-decoder="openInDecoder" @open-instruction="openInInstructionSet" />
-      <EncoderTab v-if="tab === 'enc'" :isa="isa" :request="instructionRequest" @consumed="instructionRequestUsed" />
-      <DecoderTab v-if="tab === 'dec'" :isa="isa" :request="decodeRequest" />
+      <IdeView v-show="tab === 'ide'" :key="isa.id" :isa="isa" @open-in-decoder="openInDecoder" @open-instruction="openInInstructionSet" />
+      <EncoderTab v-if="tab === 'enc'" :key="isa.id" :isa="isa" :request="instructionRequest" @consumed="instructionRequestUsed" />
+      <DecoderTab v-if="tab === 'dec'" :key="isa.id" :isa="isa" :request="decodeRequest" />
     </main>
   </div>
 </template>

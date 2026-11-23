@@ -2,13 +2,27 @@
 /**
  * Every register in one grid, coloured by what the program has done to it so far: grey = not used,
  * green = read, red = written. Registers the last step wrote stay highlighted until the next step.
- * Clicking a cell opens its details (hex, binary, signed, unsigned, ASCII, float) under the grid.
+ * Clicking a cell opens its details (hex, binary, signed, unsigned, ASCII, float) under the grid; a vector
+ * register opens as lanes of a chosen size and format.
  */
 import { t, tx } from '../i18n'
 import { computed, ref } from 'vue'
-import { asciiOfWord, binGroups, doubleFromBits, floatFromBits, hex8, javaDouble, javaFloat } from '../../core/format'
-import { READ, WRITTEN, type RegisterSpec, type RegValue } from '../../core/isa'
-import { load, save } from '../storage'
+import {
+  bfloatFromBits,
+  bigOfBytes,
+  binGroupsOf,
+  charOf,
+  doubleFromBits,
+  floatFromBits,
+  halfFromBits,
+  hexBits,
+  javaDouble,
+  javaFloat,
+  signedText,
+  unsignedText,
+} from '../../core/format'
+import { READ, WRITTEN, type Machine, type RegisterSpec, type RegValue } from '../../core/isa'
+import { isaKey, load, save } from '../storage'
 import type { SessionHandle } from './useSession'
 
 const props = defineProps<{ handle: SessionHandle }>()
@@ -17,35 +31,53 @@ const v = props.handle.version
 const isa = s.isa
 
 const banks = isa.registers
-const bank = ref<string>(load('regBank', banks[0]!.id))
+const bank = ref<string>(load(isaKey(isa.id, 'regBank'), banks[0]!.id))
 if (!banks.some((b) => b.id === bank.value)) bank.value = banks[0]!.id
 const selected = ref<number | null>(null)
 const specs = new Map<number, RegisterSpec>()
 for (const b of banks) for (const r of b.registers) specs.set(r.id, r)
 
-const num = (x: RegValue) => (typeof x === 'bigint' ? Number(BigInt.asIntN(32, x)) : x)
+/** One value: int, float, flag and special registers. The others are read as bytes. */
+const scalar = (r: RegisterSpec) => r.kind === 'int' || r.kind === 'float' || r.kind === 'flag' || r.kind === 'special'
+
+/** A register's value as one number; a vector or predicate register reads as the number its bytes make. */
+function valueOf(m: Machine, r: RegisterSpec): RegValue {
+  if (!scalar(r) && m.readRegisterBytes) {
+    const bytes = m.readRegisterBytes(r.id)
+    return bigOfBytes(bytes, 0, bytes.length)
+  }
+  return m.readRegister(r.id)
+}
+
+/** A cell shows at most 64 bits: wider registers show their low 64 after an ellipsis; the details show all. */
+function cellText(r: RegisterSpec, value: RegValue): string {
+  if (r.kind === 'flag') return String(Number(value) & 1)
+  if (r.bits <= 64) return hexBits(value, r.bits)
+  return '…' + hexBits(BigInt.asUintN(64, BigInt(value)), 64).slice(2)
+}
 
 function pickBank(id: string) {
   bank.value = id
-  save('regBank', id)
+  save(isaKey(isa.id, 'regBank'), id)
 }
 
 const view = computed(() => {
   void v.value
   const m = s.machine
   const last = s.mode === 'running' ? null : s.last
-  const wrote = new Map<number, { before: number; after: number }>()
-  for (const w of last?.writes ?? []) wrote.set(w.id, { before: num(w.before), after: num(w.after) })
+  const wrote = new Map<number, { before: RegValue; after: RegValue }>()
+  for (const w of last?.writes ?? []) wrote.set(w.id, { before: w.before, after: w.after })
   const current = banks.find((b) => b.id === bank.value) ?? banks[0]!
   const cells = current.registers
     .filter((r) => !r.untracked)
     .map((r) => {
-      const value = m ? num(m.readRegister(r.id)) : 0
+      // The SME ZA array is too large for a cell; it opens in the details.
+      const matrix = r.kind === 'matrix'
+      const value = m && !matrix ? valueOf(m, r) : 0
       const status = m ? m.registerStatus(r.id) : 0
       return {
         spec: r,
-        value,
-        text: r.kind === 'flag' ? String(value & 1) : hex8(value),
+        text: matrix ? t('点开查看', 'open to view') : cellText(r, value),
         cls: status === WRITTEN ? 'w' : status === READ ? 'r' : 'i',
         now: wrote.has(r.id),
       }
@@ -56,8 +88,40 @@ const view = computed(() => {
     if (m) for (const r of b.registers) if (!r.untracked && m.registerStatus(r.id) === WRITTEN) n++
     counts.set(b.id, n)
   }
-  return { cells, pc: m ? hex8(num(m.readRegister(isa.pcRegister))) : '—', counts, wrote }
+  const pcSpec = specs.get(isa.pcRegister)
+  return { cells, pc: m ? hexBits(m.readRegister(isa.pcRegister), pcSpec?.bits ?? 32) : '—', counts, wrote }
 })
+
+/** How a vector register is split into lanes, and how each lane reads. */
+const laneBytes = ref<number>(load(isaKey(isa.id, 'laneBytes'), 4))
+const laneFormat = ref<'hex' | 'int' | 'uint' | 'float'>(load(isaKey(isa.id, 'laneFormat'), 'hex'))
+const LANE_SIZES = [
+  { bytes: 1, name: 'B' },
+  { bytes: 2, name: 'H' },
+  { bytes: 4, name: 'S' },
+  { bytes: 8, name: 'D' },
+  { bytes: 16, name: 'Q' },
+]
+function setLanes(bytes: number | null, format: typeof laneFormat.value | null) {
+  if (bytes != null) laneBytes.value = bytes
+  if (format != null) laneFormat.value = format
+  save(isaKey(isa.id, 'laneBytes'), laneBytes.value)
+  save(isaKey(isa.id, 'laneFormat'), laneFormat.value)
+}
+
+function laneText(bytes: Uint8Array, at: number, size: number, format: string): string {
+  const raw = bigOfBytes(bytes, at, size)
+  const bits = size * 8
+  if (format === 'int') return BigInt.asIntN(bits, raw).toString()
+  if (format === 'uint') return raw.toString()
+  if (format === 'float') {
+    if (size === 2) return String(halfFromBits(Number(raw)))
+    if (size === 4) return javaFloat(floatFromBits(Number(raw) | 0))
+    if (size === 8) return javaDouble(doubleFromBits(Number(raw & 0xffffffffn) | 0, Number(raw >> 32n) | 0))
+    return '—'
+  }
+  return hexBits(raw, bits)
+}
 
 const detail = computed(() => {
   void v.value
@@ -66,28 +130,46 @@ const detail = computed(() => {
   const spec = specs.get(id)
   if (!spec) return null
   const m = s.machine
-  const value = m ? num(m.readRegister(id)) : 0
+  const bits = spec.bits
+  const w = view.value.wrote.get(id)
+  const status = m ? m.registerStatus(id) : 0
+  const change = w ? `${hexBits(w.before, bits)} → ${hexBits(w.after, bits)}` : null
+  if (!scalar(spec)) {
+    // Vector, predicate and matrix registers: lanes of the chosen size, lowest lane first.
+    const bytes = m?.readRegisterBytes?.(id) ?? new Uint8Array(Math.ceil(bits / 8))
+    const size = Math.min(laneBytes.value, bytes.length)
+    const lanes = Array.from({ length: Math.floor(bytes.length / size) }, (_, i) => ({ i, text: laneText(bytes, i * size, size, laneFormat.value) }))
+    return { spec, scalar: false, hex: '', groups: [] as string[], top: 0, rows: [], lanes, change: spec.kind === 'matrix' ? null : change, status }
+  }
+  const value = m ? valueOf(m, spec) : 0
+  const bytes = Array.from({ length: Math.ceil(bits / 8) }, (_, i) => Number((BigInt.asUintN(bits, BigInt(value)) >> BigInt(8 * i)) & 0xffn))
   const rows: { k: string; v: string }[] = [
-    { k: t('有符号', 'Signed'), v: String(value | 0) },
-    { k: t('无符号', 'Unsigned'), v: String(value >>> 0) },
-    { k: 'ASCII', v: asciiOfWord(value) },
+    { k: t('有符号', 'Signed'), v: signedText(value, bits) },
+    { k: t('无符号', 'Unsigned'), v: unsignedText(value, bits) },
+    { k: 'ASCII', v: bytes.reverse().map(charOf).join(' ') },
   ]
-  if (spec.kind === 'float') {
-    rows.unshift({ k: t('单精度', 'Single'), v: javaFloat(floatFromBits(value)) })
-    if (spec.number != null && spec.number % 2 === 0 && m) {
-      const high = num(m.readRegister(id + 1))
-      rows.splice(1, 0, { k: t(`双精度（和 $f${spec.number + 1}）`, `Double (with $f${spec.number + 1})`), v: javaDouble(doubleFromBits(value, high)) })
+  if (spec.kind === 'int' && bits === 64) {
+    const low = BigInt.asUintN(32, BigInt(value))
+    rows.splice(2, 0, { k: t('低 32 位', 'Low 32 bits'), v: `${hexBits(low, 32)} = ${BigInt.asIntN(32, low)}` })
+  }
+  if (spec.kind === 'float' && bits === 32) {
+    const n = Number(value) | 0
+    rows.unshift({ k: t('单精度', 'Single'), v: javaFloat(floatFromBits(n)) })
+    // MIPS: an even float register and the one after it hold a double.
+    const next = specs.get(id + 1)
+    if (spec.number != null && spec.number % 2 === 0 && next?.kind === 'float' && m) {
+      const high = Number(m.readRegister(id + 1)) | 0
+      rows.splice(1, 0, { k: t(`双精度（和 ${next.name}）`, `Double (with ${next.name})`), v: javaDouble(doubleFromBits(n, high)) })
     }
   }
-  const w = view.value.wrote.get(id)
-  return {
-    spec,
-    hex: hex8(value),
-    groups: binGroups(value),
-    rows,
-    change: w ? `${hex8(w.before)} → ${hex8(w.after)}` : null,
-    status: m ? m.registerStatus(id) : 0,
+  if (spec.kind === 'float' && bits === 64) {
+    const b = BigInt.asUintN(64, BigInt(value))
+    rows.unshift({ k: t('双精度', 'Double'), v: javaDouble(doubleFromBits(Number(b & 0xffffffffn) | 0, Number(b >> 32n) | 0)) })
   }
+  if (spec.kind === 'float' && bits === 16) {
+    rows.unshift({ k: t('半精度', 'Half'), v: String(halfFromBits(Number(value))) }, { k: 'BFloat16', v: javaFloat(bfloatFromBits(Number(value))) })
+  }
+  return { spec, scalar: true, hex: hexBits(value, bits), groups: binGroupsOf(value, bits), top: Math.ceil(bits / 8) * 8 - 1, rows, lanes: [], change, status }
 })
 
 function toggle(id: number) {
@@ -132,15 +214,29 @@ function toggle(id: number) {
         }}</span>
         <button class="btn x" @click="selected = null">{{ t('收起', 'Close') }}</button>
       </div>
-      <div class="hex mono">{{ detail.hex }}</div>
+      <div v-if="detail.scalar" class="hex mono">{{ detail.hex }}</div>
       <div v-if="detail.change" class="small mono changed">{{ t('本步：', 'This step: ') }}{{ detail.change }}</div>
-      <div class="bits mono">
+      <div v-if="detail.scalar" class="bits mono">
         <span v-for="(g, i) in detail.groups" :key="i" class="byte">
           <span class="b">{{ g }}</span>
-          <small>{{ 31 - i * 8 }}…{{ 24 - i * 8 }}</small>
+          <small>{{ detail.top - i * 8 }}…{{ detail.top - 7 - i * 8 }}</small>
         </span>
       </div>
-      <dl class="rows">
+      <template v-else>
+        <div class="lanectl">
+          <span class="small muted">{{ t('按', 'Lanes of') }}</span>
+          <button v-for="l in LANE_SIZES" :key="l.bytes" class="chip" :aria-pressed="laneBytes === l.bytes" @click="setLanes(l.bytes, null)">{{ l.name }}</button>
+          <span class="small muted">{{ t('显示为', 'shown as') }}</span>
+          <button class="chip" :aria-pressed="laneFormat === 'hex'" @click="setLanes(null, 'hex')">{{ t('十六进制', 'Hex') }}</button>
+          <button class="chip" :aria-pressed="laneFormat === 'int'" @click="setLanes(null, 'int')">{{ t('有符号', 'Signed') }}</button>
+          <button class="chip" :aria-pressed="laneFormat === 'uint'" @click="setLanes(null, 'uint')">{{ t('无符号', 'Unsigned') }}</button>
+          <button class="chip" :aria-pressed="laneFormat === 'float'" @click="setLanes(null, 'float')">{{ t('浮点', 'Float') }}</button>
+        </div>
+        <div class="lanes mono">
+          <span v-for="l in detail.lanes" :key="l.i" class="lane"><small>[{{ l.i }}]</small>{{ l.text }}</span>
+        </div>
+      </template>
+      <dl v-if="detail.scalar" class="rows">
         <template v-for="r in detail.rows" :key="r.k">
           <dt>{{ r.k }}</dt>
           <dd class="mono">{{ r.v }}</dd>
@@ -320,6 +416,31 @@ h3 {
 }
 .byte small {
   font-size: 9.5px;
+  color: var(--text-muted);
+}
+.lanectl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 3px;
+  font-size: 12px;
+  max-height: 260px;
+  overflow: auto;
+}
+.lane {
+  display: flex;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  word-break: break-all;
+}
+.lane small {
   color: var(--text-muted);
 }
 .rows {
