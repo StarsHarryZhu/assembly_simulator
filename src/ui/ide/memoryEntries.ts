@@ -211,8 +211,11 @@ export function memoryEntries(
     entries.push(entry)
     chain.set(d.segment, { entry, ...owner, end: addr + d.size })
   }
+  // Undeclared memory is shown in the machine's word size: doublewords on a 64-bit ISA.
+  const unit = isa.layout.wordSize === 8 ? 8 : 4
+  const unitKind: DataKind = unit === 8 ? 'dword' : 'word'
   for (const h of m.heapBlocks()) {
-    entries.push({ key: `h${h.addr}`, title: t(`堆块 #${h.index + 1}`, `heap block #${h.index + 1}`), kind: 'word', addr: u(h.addr), size: h.size, count: Math.ceil(h.size / 4), note: h.note ?? 'sbrk', line: null })
+    entries.push({ key: `h${h.addr}`, title: t(`堆块 #${h.index + 1}`, `heap block #${h.index + 1}`), kind: unitKind, addr: u(h.addr), size: h.size, count: Math.ceil(h.size / unit), note: h.note ?? 'sbrk', line: null })
   }
 
   // Written words outside every entry above, the stack and the text segment, grouped into runs. Both
@@ -225,8 +228,9 @@ export function memoryEntries(
   let run: number[] = []
   const flush = () => {
     if (!run.length) return
-    const a = run[0]!
-    others.push({ key: `w${a}`, title: t('其他写入', 'other writes'), kind: 'word', addr: a, size: run.length * 4, count: run.length, note: t('未声明', 'undeclared'), line: null })
+    const a = run[0]! - (run[0]! % unit)
+    const size = Math.ceil((run[run.length - 1]! + 4 - a) / unit) * unit
+    others.push({ key: `w${a}`, title: t('其他写入', 'other writes'), kind: unitKind, addr: a, size, count: size / unit, note: t('未声明', 'undeclared'), line: null })
     run = []
   }
   let j = 0

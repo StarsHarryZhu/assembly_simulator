@@ -121,6 +121,11 @@ export interface Program {
   /** Initial memory contents. */
   image: { addr: number; bytes: Uint8Array }[]
   entry: number
+  /**
+   * Where each section landed, for ISAs that lay sections out after assembling (AArch64 places .data after
+   * .text). `size` counts reserved bytes too (.bss, .skip). MIPS sections sit at fixed addresses and omit it.
+   */
+  sections?: { name: string; addr: number; size: number }[]
 }
 
 export interface AssembleResult {
@@ -291,6 +296,8 @@ export interface DecodedView {
   format: string
   fields: FieldView[]
   notes: string[]
+  /** What this encoding does, when the mnemonic alone does not say (AArch64 forms share mnemonics). */
+  description?: Text
 }
 
 /** One operand of a single assembly line, as the calculator edits it. */
@@ -412,6 +419,8 @@ export interface IsaPlugin {
     isRegister?: (word: string) => boolean
     /** The directive that declares each kind of data, for the memory panel. Default: the MIPS names. */
     dataDirectives?: Partial<Record<DataKind, string>>
+    /** Extension of source files, for new, example and downloaded files. Default: '.asm' (MARS); GNU as uses '.s'. */
+    fileExtension?: string
   }
   catalog: CatalogEntry[]
   /** Catalog groups in display order. */

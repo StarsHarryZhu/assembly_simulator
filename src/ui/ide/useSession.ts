@@ -70,7 +70,7 @@ export function useSession(isa: IsaPlugin): SessionHandle {
   // Saved code keeps section directives in the first column, and lines from an example follow the language.
   const savedText = saved ? translateComments(flushSections(saved.text, isa.language.sections), isa.examples, lang.value, isa.language.commentChar) : ''
   const session = markRaw(
-    new Session(isa, saved ? { name: saved.name, text: savedText } : { name: `${fallback?.id ?? 'program'}.asm`, text: fallback ? tx(fallback.text) : '' }, {
+    new Session(isa, saved ? { name: saved.name, text: savedText } : { name: `${fallback?.id ?? 'program'}${isa.language.fileExtension ?? '.asm'}`, text: fallback ? tx(fallback.text) : '' }, {
       playNote,
     }),
   )

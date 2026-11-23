@@ -255,7 +255,7 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
             <b class="mono asm">{{ ins.basic }}</b>
             <span class="mono hex2">{{ hex8(ins.word) }}</span>
             <span class="small muted mono">{{ hexA(ins.addr) }}</span>
-            <span class="small muted role">{{ plainDesc(descOf.get(ins.view.mnemonic)) }}</span>
+            <span class="small muted role">{{ plainDesc(ins.view.description ?? descOf.get(ins.view.mnemonic)) }}</span>
           </div>
           <BitFields :fields="ins.view.fields" :compact="analysis.instructions.length > 2" />
           <div class="bin mono small">

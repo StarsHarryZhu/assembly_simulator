@@ -41,5 +41,7 @@ breakpoints, console, input), and the rest are small helpers for numbers, memory
 ## 4. Progress
 
 Done: contracts used by the MIPS plugin and all panels; session covered by `tests/core`; the contract
-and helpers a 64-bit ISA with vector registers needs (ARMv9-A phase 0).
-Not done: the 64-bit paths are tested on their own but no plugin uses them until the AArch64 plugin.
+and helpers a 64-bit ISA with vector registers needs (ARMv9-A phase 0), used by the AArch64 plugin
+(`Program.sections` gives its page-aligned section layout, `language.fileExtension` its `.s` files,
+`DecodedView.description` the description of a form that shares its mnemonic).
+Not done: vector, predicate and ZA register paths stay unused until AArch64 phases 2–4.

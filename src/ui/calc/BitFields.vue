@@ -136,6 +136,66 @@ const columns = () => props.fields.map((f) => `minmax(0, ${f.hi - f.lo + 1}fr)`)
 .f-zero {
   --c: var(--text-muted);
 }
+/* AArch64 field names: first operand or base, other sources, destination or transfer register, values, modifiers. */
+.f-Rn {
+  --c: var(--series-4);
+}
+.f-Rm,
+.f-Ra,
+.f-Rs {
+  --c: var(--series-3);
+}
+.f-Rd,
+.f-Rt,
+.f-Rt2 {
+  --c: var(--series-5);
+}
+.f-imm2,
+.f-imm3,
+.f-imm5,
+.f-imm6,
+.f-imm7,
+.f-imm8,
+.f-imm9,
+.f-imm12,
+.f-imm14,
+.f-imm16,
+.f-imm19,
+.f-imm26,
+.f-immlo,
+.f-immhi,
+.f-immr,
+.f-imms,
+.f-b5,
+.f-b40,
+.f-nzcv,
+.f-mask {
+  --c: var(--series-2);
+}
+.f-sf,
+.f-N,
+.f-S,
+.f-sh,
+.f-shift,
+.f-hw,
+.f-option,
+.f-cond,
+.f-size,
+.f-opc,
+.f-o0,
+.f-op0,
+.f-op1,
+.f-op2,
+.f-CRn,
+.f-CRm,
+.f-L,
+.f-A,
+.f-R,
+.f-M,
+.f-Z,
+.f-W {
+  --c: var(--series-1);
+}
 @media (max-width: 520px) {
   .seg {
     padding: 3px 2px 2px;

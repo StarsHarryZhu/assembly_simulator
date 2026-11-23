@@ -47,7 +47,8 @@ produce the golden test fixtures. Interfaces for other ISAs (ARM, x86-64) exist 
 ## 3. Contents
 
 - `index.html` — Vite entry page; applies the saved theme before the app loads.
-- `package.json` — scripts (`dev`, `build`, `preview`, `typecheck`, `test`, `golden`) and dependencies.
+- `package.json` — scripts (`dev`, `build`, `preview`, `typecheck`, `test`, `golden`, `llvm-golden`,
+  `native-golden`) and dependencies.
 - `package-lock.json` — locked dependency versions.
 - `vite.config.ts` — Vue and single-file plugins, relative base, Vitest settings.
 - `tsconfig.json` — strict TypeScript settings for sources and tests.
@@ -56,7 +57,7 @@ produce the golden test fixtures. Interfaces for other ISAs (ARM, x86-64) exist 
 - `LICENSE` — MIT license text; the copyright notice is what makes the license valid.
 - `src` — the application: core contracts, the MIPS engine, and the Vue UI.
 - `tests` — unit tests, golden comparisons against MARS, and the AGENTS.md checker.
-- `scripts` — developer tools; regenerates golden fixtures with MARS.
+- `scripts` — developer tools; regenerates golden fixtures with MARS, LLVM and the native CPU.
 - `AGENTS.md` — this file.
 
 ## 4. Progress
@@ -84,8 +85,13 @@ Not done / known gaps:
 
 In progress: an ARMv9-A (AArch64) plugin covering the A64 base, floating point, Advanced SIMD, SVE/SVE2
 and SME/SME2, with Linux system calls, a built-in C library and EL1 exception vectors. It is built in
-phases and stays selectable only in the development build until all of them are done. Phase 0 is done:
-the core contracts and panels handle 64-bit registers and addresses, vector registers, and GNU as
-comments, with MIPS unchanged.
+phases and stays selectable only in the development build (the published bundle leaves its code out)
+until all of them are done. Phase 0 is done: the core contracts and panels handle 64-bit registers and
+addresses, vector registers, and GNU as comments, with MIPS unchanged. Phase 1 is done: the A64 integer
+base, loads and stores, atomics, branches and system instructions, a GNU as assembler, Linux system
+calls, a C library, EL0/EL1 exceptions, the calculator, decoder, formatter, references and 7 examples.
+Encodings match LLVM both ways; 3240 single-instruction cases match this Mac's CPU; about 3.4 million
+instructions per second. Next: phase 2 (scalar floating point and Neon), then SVE and SME; after phase 1
+the owner also wants an engine choice (run on the real CPU when it supports the code, or the simulator).
 
 Goals: the AArch64 plugin above, then x86-64, behind the same `IsaPlugin` interface.

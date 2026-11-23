@@ -15,6 +15,9 @@ const s = props.handle.session
 const v = props.handle.version
 const busy = props.handle.busy
 const go = props.handle.control
+const ext = s.isa.language.fileExtension ?? '.asm'
+// Stepping by line differs from stepping by instruction only where one line can expand to several (AArch64 aliases are single encodings).
+const hasPseudo = s.isa.catalog.some((e) => e.pseudo)
 
 const st = computed(() => {
   void v.value
@@ -79,8 +82,8 @@ function toggleAuto() {
   <div class="toolbar" role="toolbar" :aria-label="t('编辑运行工具栏', 'Edit and run toolbar')">
     <div class="group">
       <button class="btn" :title="t('新建一个空文件（当前代码没保存时会先问你）', 'Start an empty file (asks first if the current code is not saved)')" @click="emit('new')">{{ t('新建', 'New') }}</button>
-      <button class="btn" :title="t('打开 .asm 文件（也可以直接拖进编辑器）', 'Open an .asm file (or drop one on the editor)')" @click="emit('open')">{{ t('打开', 'Open') }}</button>
-      <button class="btn" :title="t('把代码下载成 .asm 文件', 'Download the code as an .asm file')" @click="emit('download')">{{ t('下载', 'Download') }}</button>
+      <button class="btn" :title="t(`打开 ${ext} 文件（也可以直接拖进编辑器）`, `Open a ${ext} file (or drop one on the editor)`)" @click="emit('open')">{{ t('打开', 'Open') }}</button>
+      <button class="btn" :title="t(`把代码下载成 ${ext} 文件`, `Download the code as a ${ext} file`)" @click="emit('download')">{{ t('下载', 'Download') }}</button>
       <select class="inp examples" value="" :aria-label="t('示例程序', 'Examples')" @change="pickExample">
         <option value="" disabled hidden>{{ t('示例程序…', 'Examples…') }}</option>
         <option v-for="ex in s.isa.examples" :key="ex.id" :value="ex.id">{{ tx(ex.title) }}</option>
@@ -122,7 +125,7 @@ function toggleAuto() {
       />
       <span class="small mono ms">{{ st.interval }} ms</span>
     </div>
-    <div class="group seg" role="radiogroup" :aria-label="t('单步一次执行多少', 'How much one step runs')">
+    <div v-if="hasPseudo" class="group seg" role="radiogroup" :aria-label="t('单步一次执行多少', 'How much one step runs')">
       <span class="small muted">{{ t('单步按', 'Step by') }}</span>
       <button class="chip" :aria-pressed="st.granularity === 'line'" :title="t('每步执行一行源码：伪指令（如 li、la、blt）展开成的几条真指令一次执行完', 'Each step runs one source line: all the basic instructions a pseudo-instruction (li, la, blt, …) expands to run together')" @click="s.setGranularity('line')">
         {{ t('源码行', 'Source line') }}

@@ -78,7 +78,7 @@ function add(word: string) {
         </label>
         <label class="small muted base">
           {{ t('第一条的地址', 'First address') }}
-          <input v-model.lazy="baseText" class="inp" spellcheck="false" :aria-label="t('第一条指令的地址', 'Address of the first instruction')" />
+          <input v-model.lazy="baseText" class="inp" :style="{ '--addr-chars': isa.layout.addressBits === 64 ? 18 : 10 }" spellcheck="false" :aria-label="t('第一条指令的地址', 'Address of the first instruction')" />
         </label>
       </div>
       <textarea id="dec-in" v-model="text" class="inp area" rows="5" spellcheck="false" />
@@ -150,7 +150,9 @@ function add(word: string) {
   align-items: center;
 }
 .base .inp {
-  width: 110px;
+  /* Wide enough for the ISA's addresses: 10 characters for 32 bits, 18 for 64. */
+  width: calc(var(--addr-chars, 10) * 1ch + 24px);
+  font-family: var(--font-mono);
 }
 .area {
   font-size: 13.5px;

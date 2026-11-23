@@ -103,9 +103,12 @@ async function readyToReplace(action: string): Promise<boolean> {
   return choice === 'save' || choice === 'discard'
 }
 
+/** Source file extension of the current ISA. */
+const ext = () => s.isa.language.fileExtension ?? '.asm'
+
 async function newFile() {
   if (!(await readyToReplace(t('新建文件', 'create a new file')))) return
-  replaceSource('untitled.asm', '')
+  replaceSource(`untitled${ext()}`, '')
   editor.value?.goto(1, 0)
 }
 
@@ -113,7 +116,7 @@ async function loadExample(id: string) {
   const ex = s.isa.examples.find((e) => e.id === id)
   if (!ex) return
   if (!(await readyToReplace(t(`打开示例“${tx(ex.title)}”`, `open the example "${tx(ex.title)}"`)))) return
-  await handle.busyWhile(() => replaceSource(`${ex.id}.asm`, tx(ex.text)))
+  await handle.busyWhile(() => replaceSource(`${ex.id}${ext()}`, tx(ex.text)))
 }
 
 async function openFile(file: File | undefined) {
@@ -134,7 +137,7 @@ function onDrop(e: DragEvent) {
 }
 
 function downloadName(): string {
-  return /\.(asm|s)$/i.test(s.file.name) ? s.file.name : `${s.file.name || 'program'}.asm`
+  return /\.(asm|s|S)$/i.test(s.file.name) ? s.file.name : `${s.file.name || 'program'}${ext()}`
 }
 
 function download() {
@@ -155,7 +158,7 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 }
 
 function rename() {
-  const name = fileName.value.trim() || 'program.asm'
+  const name = fileName.value.trim() || `program${ext()}`
   fileName.value = name
   s.setName(name)
 }

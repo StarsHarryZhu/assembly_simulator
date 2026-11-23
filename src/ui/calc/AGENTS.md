@@ -38,4 +38,6 @@ words back into assembly with fields and notes.
 
 ## 4. Progress
 
-Done: every basic and pseudo form, both languages. Not done: nothing outstanding.
+Done: every basic and pseudo form, both languages; bit fields coloured by role for MIPS and AArch64
+field names; each encoded instruction described by its own form (AArch64 forms share mnemonics); the
+disassembler's address box sized to the ISA's addresses. Not done: nothing outstanding.

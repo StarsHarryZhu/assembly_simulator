@@ -67,7 +67,8 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
   index of an instruction's reference tables, and each directive's explanation), auto-closed quotes and brackets, breakpoints, modifier-click navigation with VS Code-style link feedback, the Format transaction.
 - `EditorPane.vue` — the editor bound to the session (text, breakpoints, diagnostics, current line);
   emits `open-instruction` for a modifier-clicked mnemonic; `format()` applies the plugin's formatter.
-- `Toolbar.vue` — new, open, download, examples, format, run controls, interval, step size (line by default), status.
+- `Toolbar.vue` — new, open, download, examples, format, run controls, interval, step size (line by default,
+  shown only for ISAs with pseudo-instructions), status.
 - `TerminalPane.vue` — program output with input prompt, messages, files.
 - `FilesPanel.vue` — files the program can open, with upload and download.
 - `files.ts` — saving bytes or text as a browser download.
@@ -86,6 +87,7 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
 
 Done: everything listed above, checked in the browser in both languages and themes, including
 ⌘/Ctrl-click navigation to the instruction set tab and to label and macro definitions. The paths for
-64-bit registers, vector lanes, 64-bit addresses and GNU as comments are in place (ARMv9-A phase 0).
-Not done: those paths are seen in the browser only once the AArch64 plugin exists; SVE predicate and SME
+64-bit registers, vector lanes, 64-bit addresses and GNU as comments are in place (ARMv9-A phase 0) and
+checked in the browser with the AArch64 plugin (phase 1); file names use the plugin's extension (`.s`).
+Not done: SVE predicate and SME
 ZA views are planned with those extensions; GNU numeric local labels (`1:`, `1b`) are not indexed yet.

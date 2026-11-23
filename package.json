@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
-    "golden": "node scripts/mars-golden.mjs"
+    "golden": "node scripts/mars-golden.mjs",
+    "llvm-golden": "node scripts/llvm-golden.mjs",
+    "native-golden": "node scripts/native-golden.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
