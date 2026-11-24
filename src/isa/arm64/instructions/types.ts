@@ -6,6 +6,8 @@
  * to load and store are virtual addresses as bigints; the machine checks and translates them.
  */
 
+import type { FpEnv } from '../softfloat'
+
 /** Access kinds for load and store. */
 export const ACC = {
   normal: 0,
@@ -75,6 +77,26 @@ export interface Cpu {
   pstate(op1: number, op2: number, crm: number): void
   /** SYS (DC, IC, AT, TLBI): only DC ZVA changes memory. */
   sysOp(op1: number, crn: number, crm: number, op2: number, rt: number): void
+
+  /** The low `bytes` bytes of SIMD&FP register n (a copy). */
+  vread(n: number, bytes: number): Uint8Array
+  /** Write the low bytes of SIMD&FP register n; the rest of the register becomes zero. */
+  vwrite(n: number, data: Uint8Array): void
+  /** The low `bytes` bytes of SIMD&FP register n as an unsigned number. */
+  vget(n: number, bytes: number): bigint
+  /**
+   * Write a scalar to the low `bytes` bytes of register n, zeroing the rest; with `merge` and FPCR.NEP set
+   * (FEAT_AFP), the rest comes from register `merge` instead.
+   */
+  vset(n: number, bytes: number, v: bigint, merge?: number): void
+  /** A floating-point environment holding FPCR, for one instruction's soft-float calls. */
+  fpEnv(): FpEnv
+  /** FPCR without marking it read (for instructions that only look at a control bit). */
+  readonly fpcr: number
+  /** Add the environment's exception flags to FPSR. */
+  fpFlags(env: FpEnv): void
+  /** Set FPSR.QC (a saturating instruction saturated). */
+  setQC(): void
 
   /** The exclusive monitor of LDXR/STXR. */
   markExclusive(addr: bigint, size: number): void

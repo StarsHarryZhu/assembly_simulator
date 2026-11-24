@@ -25,6 +25,11 @@ export const GROUP_TITLES: Record<string, Text> = {
   atomic: T('原子和独占', 'Atomics and exclusives'),
   mops: T('内存复制和设置', 'Memory copy and set'),
   system: T('系统', 'System'),
+  fp: T('标量浮点', 'Scalar floating point'),
+  simd: T('向量整数（Neon）', 'Vector integer (Neon)'),
+  simdfp: T('向量浮点（Neon）', 'Vector floating point (Neon)'),
+  crypto: T('加密扩展', 'Cryptographic extensions'),
+  vload: T('浮点和向量加载存储', 'FP and vector loads and stores'),
 }
 
 export const CATALOG: CatalogEntry[] = allForms().map((form) => ({
@@ -54,7 +59,7 @@ for (const form of allForms()) {
  * Example programs, in menu order. examples/<id>.s has Chinese comments, examples/en/<id>.s the same code
  * with English comments. Each file starts with "// <title>".
  */
-const EXAMPLE_ORDER = ['welcome', 'hello', 'hello-printf', 'factorial', 'input', 'heap', 'exceptions']
+const EXAMPLE_ORDER = ['welcome', 'hello', 'hello-printf', 'factorial', 'input', 'heap', 'float', 'simd', 'exceptions']
 const zhFiles = import.meta.glob('./examples/*.s', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const enFiles = import.meta.glob('./examples/en/*.s', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const idOf = (path: string) => path.replace(/^.*\/|\.s$/g, '')

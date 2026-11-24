@@ -14,6 +14,7 @@ import { addrOf } from '../../../core/format'
 import { gprName, parseGpr, SYSREG_BY_ENC, SYSREG_BY_NAME } from '../registers'
 import { decodeBitmask, encodeBitmask } from './bitmask'
 import { fmtImm, hexAddr, unify, vaOf, type Fields, type OperandStream, type OperandType, type OpSpec } from './syntax'
+import { resolveSimd } from './simd'
 
 const sext = (v: number, bits: number) => (bits >= 32 ? v | 0 : (v << (32 - bits)) >> (32 - bits))
 
@@ -993,6 +994,8 @@ function resolveUncached(name: string): OpSpec {
     case 'bitpos':
       return { type: bitpos, arg: null, name }
   }
+  const simd = resolveSimd(name)
+  if (simd) return simd
   throw new Error(`unknown operand <${name}>`)
 }
 

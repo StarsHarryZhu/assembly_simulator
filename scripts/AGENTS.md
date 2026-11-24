@@ -32,4 +32,4 @@ Java helper that lists the instruction forms MARS knows, used when checking our 
 
 Done: fixtures for 39 test programs and 7 examples; errors inside macro expansions ("line 6->2")
 are read at the calling line. AArch64: encoding fixtures from LLVM and behaviour fixtures from the CPU
-for the A64 base. Not done: the later AArch64 phases.
+for the A64 base, floating point, Neon and crypto. Not done: SVE and SME.

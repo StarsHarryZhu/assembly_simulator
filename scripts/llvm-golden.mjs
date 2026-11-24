@@ -6,6 +6,7 @@
  * table produces, so `npm test` can compare without clang.
  *
  *   node scripts/llvm-golden.mjs
+ *   ONLY=fp,simd node scripts/llvm-golden.mjs   (just those groups)
  *
  * Writes, per catalog group, `{ cases: [[word, addr, text]] }` — LLVM's disassembly of random words inside
  * each of our encodings — and, per instruction class, the same for random words across the class (text
@@ -119,12 +120,15 @@ function cases_(words) {
 
 const { module: cases } = await runnerImport(join(ROOT, 'scripts', 'llvm', 'cases.ts'), { root: ROOT, logLevel: 'error', configFile: false })
 mkdirSync(OUT, { recursive: true })
-for (const name of readdirSync(OUT)) if (name.endsWith('.json')) rmSync(join(OUT, name))
+// ONLY=fp,simd regenerates just those groups and leaves every other fixture alone.
+const only = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null
+if (!only) for (const name of readdirSync(OUT)) if (name.endsWith('.json')) rmSync(join(OUT, name))
 for (const { group, words } of [...cases.wordCases(), ...cases.classCases(), ...cases.sysCases()]) {
+  if (only && !only.has(group)) continue
   writeFileSync(join(OUT, `${group}.json`), JSON.stringify({ cases: cases_(words) }, null, 0) + '\n')
   console.log(`${group}: ${words.length} words`)
 }
-if (existsSync(ASM)) {
+if (existsSync(ASM) && !only) {
   for (const file of readdirSync(ASM).filter((f) => f.endsWith('.s'))) {
     const lines = readFileSync(join(ASM, file), 'utf8')
       .split('\n')
@@ -134,7 +138,7 @@ if (existsSync(ASM)) {
     console.log(`asm ${file}: ${lines.length} lines`)
   }
 }
-if (existsSync(PROGRAMS)) {
+if (existsSync(PROGRAMS) && !only) {
   for (const file of readdirSync(PROGRAMS).filter((f) => f.endsWith('.s'))) {
     writeFileSync(join(OUT, `prog-${file.replace(/\.s$/, '')}.json`), JSON.stringify({ sections: sectionBytes(join(PROGRAMS, file)) }, null, 0) + '\n')
     console.log(`program ${file}`)

@@ -18,4 +18,5 @@ objdump, drawn from our own instruction table, plus handwritten assembly lines a
 
 ## 4. Progress
 
-Done: the base A64 classes. Not done: SIMD&FP, SVE and SME cases (later phases).
+Done: the base A64 classes and SIMD&FP (scalar FP, Neon, crypto, vector loads and stores). Not done:
+SVE and SME cases (later phases).

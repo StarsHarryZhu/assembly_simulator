@@ -23,5 +23,5 @@ the calculator's one-line analysis.
 
 ## 4. Progress
 
-Done: MIPS32. In progress: AArch64 (phase 1 of 5, dev build only; the published bundle leaves it out
+Done: MIPS32. In progress: AArch64 (phase 2 of 5 done, dev build only; the published bundle leaves it out
 through a dev-only dynamic import). Not done: x86-64.

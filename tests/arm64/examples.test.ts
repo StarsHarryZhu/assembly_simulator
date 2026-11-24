@@ -28,6 +28,13 @@ const EXPECTED: Record<string, { stdin?: string; out: string }> = {
   factorial: { out: Array.from({ length: 11 }, (_, n) => `${String(n).padStart(2)}! = ${[1, 1, 2, 6, 24, 120, 720, 5040, 40320, 362880, 3628800][n]}\n`).join('') },
   input: { stdin: '6 7\nAda\n', out: 'Two numbers: 6 + 7 = 13\n6 * 7 = 42\nYour name: Hello, Ada!\n' },
   heap: { out: Array.from({ length: 10 }, (_, i) => `${i} squared is ${i * i}\n`).join('') },
+  float: {
+    out:
+      'step 1: x = 1.5\nstep 2: x = 1.4166666666666665\nstep 3: x = 1.4142156862745097\nstep 4: x = 1.4142135623746899\n' +
+      'step 5: x = 1.4142135623730949\nfsqrt:  x = 1.4142135623730951, difference -2.22045e-16\n' +
+      'as float: 1.41421354, x * 10^6 rounded: 1414214\n',
+  },
+  simd: { out: 'a . b = 816\n1^2 + 2^2 + ... + 16^2 = 1496\n' },
   exceptions: { out: '  exception: EC = 0x24 at 0x400010\n  exception: EC = 0x3c at 0x400014\nBack in main after two exceptions.\n' },
 }
 

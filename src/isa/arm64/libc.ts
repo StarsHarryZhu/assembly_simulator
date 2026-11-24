@@ -6,6 +6,8 @@
  * (x0–x7, then the stack; variadic arguments as on Linux), and returns to x30.
  */
 import { L, T, type Text } from '../../core/i18n'
+import { F128, formatFloat, numberPrefix, parseFloatBits } from './fpformat'
+import { F32, F64 } from './softfloat'
 import { MALLOC_BASE, MALLOC_LIMIT, readBytes, readCString, STUB_BASE, toUtf8, utf8, writeBytes, type Block, type Host } from './linux'
 
 export interface LibcFunction {
@@ -19,6 +21,10 @@ export interface LibcFunction {
 /** Integer arguments in order: x0–x7, then 8-byte stack slots from sp. */
 export interface Args {
   (i: number): bigint
+  /** Floating-point argument register v<i> (i < 8), all 128 bits. */
+  fp(i: number): bigint
+  /** The 8-byte stack slot i above sp, where arguments go once their registers run out. */
+  stack(i: number): bigint
 }
 
 const M64 = 0xffff_ffff_ffff_ffffn
@@ -28,12 +34,25 @@ const u64 = (v: bigint | number) => BigInt.asUintN(64, BigInt(v))
 
 /* ------------------------------------------------------------------ printf */
 
-/** Format like printf; the variadic arguments start at slot `first`. Returns the bytes. */
+/**
+ * Format like printf; the variadic arguments start at integer slot `first`. As on Linux (AAPCS64),
+ * integers come from x registers and floating-point values from v0–v7, each until its registers run out,
+ * and then both from the stack in order. Returns the bytes.
+ */
 function format(h: Host, fmt: Uint8Array, args: Args, first: number): number[] {
   const out: number[] = []
-  let next = first
-  const arg = () => args(next++)
-  let floatNoted = false
+  let gp = first
+  let fr = 0
+  let st = Math.max(0, first - 8)
+  const arg = () => (gp < 8 ? args(gp++) : args.stack(st++))
+  const fpArg = (quad: boolean) => {
+    if (fr < 8) return args.fp(fr++)
+    // A long double on the stack takes a 16-byte aligned pair of slots.
+    if (!quad) return args.stack(st++)
+    st += st & 1
+    const lo = args.stack(st++)
+    return (args.stack(st++) << 64n) | lo
+  }
   for (let i = 0; i < fmt.length; i++) {
     const ch = fmt[i]!
     if (ch !== 0x25 /* % */) {
@@ -128,12 +147,16 @@ function format(h: Host, fmt: Uint8Array, args: Args, first: number): number[] {
       case 'g':
       case 'G':
       case 'a':
-      case 'A':
-        // Floating-point arguments travel in v0–v7, which arrive with the floating-point phase.
-        out.push(...fmt.subarray(start, i + 1))
-        if (!floatNoted) h.out(L('\n[printf 的浮点格式还不支持]\n', '\n[printf floating-point formats are not supported yet]\n'))
-        floatNoted = true
+      case 'A': {
+        // float arguments arrive promoted to double; %Lf takes a long double (binary128) from a q register.
+        const quad = length === 'L'
+        const raw = fpArg(quad)
+        const r = formatFloat(quad ? raw : raw & M64, quad ? F128 : F64, conv, flags, precision)
+        const hex = conv === 'a' || conv === 'A'
+        const body = hex && !r.special ? r.body.slice(2) : r.body
+        pad([...toUtf8(body)], [...toUtf8(r.sign + (hex && !r.special ? r.body.slice(0, 2) : ''))], !r.special)
         break
+      }
       default:
         out.push(...fmt.subarray(start, i + 1))
     }
@@ -271,6 +294,26 @@ function scan(h: Host, fmt: Uint8Array, args: Args, first: number, src: Source):
         if (!bytes.length) return assigned
         if (!suppress) {
           writeBytes(h, args(next++), [...bytes, 0])
+          assigned++
+        }
+        break
+      }
+      case 'f':
+      case 'F':
+      case 'e':
+      case 'E':
+      case 'g':
+      case 'G':
+      case 'a':
+      case 'A': {
+        while (isSpace(src.peek())) src.next()
+        let text = ''
+        while (text.length < max && src.peek() !== 0 && numberPrefix(text + String.fromCharCode(src.peek()))) text += String.fromCharCode(src.next())
+        const target = length === 'L' ? F128 : length === 'l' ? F64 : F32
+        const bits = parseFloatBits(text, target)
+        if (bits === null) return assigned
+        if (!suppress) {
+          h.store(args(next++), target.n / 8, bits)
           assigned++
         }
         break

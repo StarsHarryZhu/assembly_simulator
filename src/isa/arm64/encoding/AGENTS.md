@@ -19,9 +19,12 @@ templates and the table that turns lines into words and words into text, in both
 - `bitmask.ts` — logical immediates (N, immr, imms) to values and back.
 - `syntax.ts` — operand templates: compile, match, print, sample, rebuild from operand texts.
 - `operands.ts` — every operand type (registers, immediates, labels, shifts, extends, system names).
+- `simd.ts` — SIMD&FP operand types: scalar and vector registers, elements, lists, lanes, FP and modified immediates.
 - `table.ts` — the instruction and alias table: define, encode a line, decode a word, pick the alias to show.
 
 ## 4. Progress
 
 Done: everything the A64 base needs, including the full DC, IC, AT and TLBI name tables (with the nXS
-and range forms). Not done: vector, predicate and ZA operand types for phases 2–4.
+and range forms). Phase 2: vector arrangements, elements and lanes, register lists, structure
+loads' post-index forms, floating-point and modified immediates (`simd.ts`). Not done: predicate and ZA
+operand types for phases 3–4.

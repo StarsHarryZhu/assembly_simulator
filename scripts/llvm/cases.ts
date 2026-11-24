@@ -53,6 +53,10 @@ export const CLASSES: { name: string; mask: number; value: number }[] = [
   { name: 'dp-reg', mask: 0x0e000000, value: 0x0a000000 },
   // Loads and stores without the SIMD&FP bit (26).
   { name: 'ldst', mask: 0x0a000000 | 0x04000000, value: 0x08000000 },
+  // Loads and stores of SIMD&FP registers (bit 26 set).
+  { name: 'ldst-v', mask: 0x0e000000, value: 0x0c000000 },
+  // Scalar floating point, Advanced SIMD and the cryptographic extensions (op0 x111).
+  { name: 'simd-fp', mask: 0x0e000000, value: 0x0e000000 },
 ]
 
 /** Random words in the implemented classes. */

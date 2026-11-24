@@ -17,10 +17,13 @@ states, and the C harness that runs them on this Mac's CPU and prints what each 
 ## 3. Contents
 
 - `cases.ts` — picks cases per catalog group from random words, drops those our machine sees leave the buffer.
-- `state.ts` — the deterministic starting state (registers, NZCV, buffer bytes) from a seed.
-- `harness.c` — loads each state, runs the case, catches faults and prints registers, flags and buffer.
+- `state.ts` — the deterministic starting state (registers, NZCV, V registers, buffer bytes) from a seed.
+- `harness.c` — loads each state and FPCR, runs the case, catches faults and prints registers, flags,
+  FPSR, V registers and buffer.
 
 ## 4. Progress
 
 Done: integer data processing, conditional select, loads and stores, atomics and exclusives (3240
-cases). Not done: floating point and Neon (phase 2), SVE in streaming mode (phase 3), SME (phase 4).
+cases); scalar floating point and Neon under random FPCR modes with IEEE special values, vector loads and
+stores, AES and SHA (8107 cases; SM3 and SM4 are absent on this CPU). Not done: SVE in streaming mode
+(phase 3), SME (phase 4).

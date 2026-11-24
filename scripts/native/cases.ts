@@ -14,14 +14,19 @@ import { allInstrs, disassemble, operandsOf } from '../../src/isa/arm64/encoding
 import { extract } from '../../src/isa/arm64/encoding/pattern'
 import { ArmMachine } from '../../src/isa/arm64/cpu'
 import type { Environment, Program } from '../../src/core/isa'
-import { BUF_SIZE, initialState, rng, type NativeState } from './state'
+import { FPCR_ID, FPSR_ID, V0 } from '../../src/isa/arm64/registers'
+import { BUF_SIZE, initialState, rng, vectorState, type NativeState, type VectorState } from './state'
 
 /** Where the buffer sits in our machine. */
 export const SIM_BUF = 0x500000
 export const SIM_TEXT = 0x400000
 
-const GROUPS = new Set(['arith', 'logic', 'move', 'bits', 'cond', 'load', 'atomic'])
+const GROUPS = new Set(['arith', 'logic', 'move', 'bits', 'cond', 'load', 'atomic', 'fp', 'simd', 'simdfp', 'crypto', 'vload'])
+/** Groups whose cases run with a random FPCR. */
+const FP_GROUPS = new Set(['fp', 'simd', 'simdfp', 'crypto', 'vload'])
 const SKIP = /^(pac|aut|xpac|ldra|retaa|retab|braa|blraa)/
+/** Features this CPU lacks (they would only show SIGILL): SM3 and SM4 are checked by unit tests instead. */
+const ABSENT = new Set(['sm3', 'sm4'])
 
 export interface NativeCase {
   group: string
@@ -32,6 +37,8 @@ export interface NativeCase {
   ptr: number[]
   /** Registers that hold small offsets. */
   small: number[]
+  /** FPCR for the case (0 outside the floating-point groups). */
+  fpcr: number
 }
 
 const quiet = (): Environment => ({
@@ -77,9 +84,12 @@ class Probe extends ArmMachine {
 }
 
 /** Set a machine to a case's starting state. */
-export function applyState(m: ArmMachine, s: NativeState, ptr: number[]): void {
+export function applyState(m: ArmMachine, s: NativeState, ptr: number[], vs: VectorState, fpcr: number): void {
   s.x.forEach((v, n) => m.setRegister(n, ptr.includes(n) ? BigInt(SIM_BUF) + v : v))
   for (let i = 0; i < 4; i++) m.setRegister(33 + i, (s.nzcv >> (3 - i)) & 1)
+  vs.v.forEach((v, n) => m.setRegister(V0 + n, v))
+  m.setRegister(FPCR_ID, BigInt(fpcr))
+  m.setRegister(FPSR_ID, 0n)
 }
 
 export function nativeCases(perInstr = 8, seed = 11): NativeCase[] {
@@ -89,7 +99,7 @@ export function nativeCases(perInstr = 8, seed = 11): NativeCase[] {
   let caseSeed = 1000
   for (const ins of allInstrs()) {
     const group = ins.spec.group
-    if (!GROUPS.has(group) || SKIP.test(ins.spec.mnemonic) || ins.spec.feature === 'pauth') continue
+    if (!GROUPS.has(group) || SKIP.test(ins.spec.mnemonic) || ins.spec.feature === 'pauth' || ABSENT.has(ins.spec.feature ?? '')) continue
     if (operandsOf(ins.form.items).some((op) => op.type.kind === 'label')) continue
     const free = ~ins.pattern.mask >>> 0
     let made = 0
@@ -100,22 +110,25 @@ export function nativeCases(perInstr = 8, seed = 11): NativeCase[] {
       if (ins.spec.check?.(f)) continue
       const text = disassemble(word, { pc: SIM_TEXT })
       if (!text || /\b(sp|wsp|x18|w18)\b|</.test(text)) continue
-      const memoryForm = group === 'load' || group === 'atomic'
+      const memoryForm = group === 'load' || group === 'atomic' || group === 'vload'
       const ptr = memoryForm && 'Rn' in f ? [f.Rn!] : []
       // The base register named twice (as data too) would store or compare a buffer address, which differs.
       if (ptr.length && (text.match(new RegExp(`\\b[xw]${ptr[0]}\\b`, 'g'))?.length ?? 0) > 1) continue
-      const small = memoryForm && 'Rm' in f && 'option' in f && f.Rm !== f.Rn ? [f.Rm!] : []
+      // Offset registers (and the post-index registers of structure loads) hold small values.
+      const small = memoryForm && 'Rm' in f && ('option' in f || group === 'vload') && f.Rm !== f.Rn ? [f.Rm!] : []
       const s = caseSeed++
       const state = initialState(s, ptr, small)
+      const vs = vectorState(s)
+      const fpcr = FP_GROUPS.has(group) ? vs.fpcr : 0
       const m = new Probe(caseProgram(word, state.memory), quiet())
-      applyState(m, state, ptr)
+      applyState(m, state, ptr, vs, fpcr)
       m.step()
       if (m.outside) continue
-      out.push({ group, text, word, seed: s, ptr, small })
+      out.push({ group, text, word, seed: s, ptr, small, fpcr })
       made++
     }
   }
   return out
 }
 
-export { initialState, BUF_SIZE, BASE_OFFSET } from './state'
+export { initialState, vectorState, BUF_SIZE, BASE_OFFSET } from './state'

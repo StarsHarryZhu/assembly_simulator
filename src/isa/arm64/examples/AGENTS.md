@@ -4,7 +4,8 @@
 
 Example programs for the IDE's example menu when the AArch64 plugin is selected, each showing one thing:
 a first loop with printf, raw Linux system calls, printf formats, recursion and stack frames, keyboard
-input with scanf, heap memory from malloc, and faults caught by an EL1 vector table. These files carry
+input with scanf, heap memory from malloc, floating point, Neon vectors, and faults caught by an EL1
+vector table. These files carry
 Chinese comments; `en` holds the same programs with English comments, and the plugin pairs them by name.
 
 ## 2. Constraints
@@ -24,9 +25,12 @@ Chinese comments; `en` holds the same programs with English comments, and the pl
 - `factorial.s` — recursive factorial with stack frames and numeric local labels.
 - `input.s` — reads two numbers and a name with scanf.
 - `heap.s` — an array from malloc, filled and printed, then freed.
+- `float.s` — square root of 2 by Newton's method, compared with fsqrt; printf %g and single precision.
+- `simd.s` — a floating-point dot product with fmla on 4 lanes, and an integer one with udot.
 - `exceptions.s` — an alignment fault and a breakpoint handled at EL1 and resumed.
 - `en` — the same programs with English comments.
 
 ## 4. Progress
 
-Done: seven examples in both languages. Not done: float and SIMD (phase 2), SVE (phase 3), SME (phase 4).
+Done: nine examples in both languages, including float and SIMD (phase 2). Not done: SVE (phase 3), SME
+(phase 4).

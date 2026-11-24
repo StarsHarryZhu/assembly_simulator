@@ -250,3 +250,68 @@ describe('undo and status', () => {
     expect(m.readRegister(0)).toBe(BigInt('x'.charCodeAt(0)))
   })
 })
+
+describe('C library floating point', () => {
+  it('prints doubles from v0–v7 and integers from x1–x7, then both from the stack in order', () => {
+    const { out } = run(`
+      .text
+      .global main
+main:
+      stp x29, x30, [sp, #-32]!
+      adr x0, fmt
+      mov w1, #7
+      adr x2, str
+      ldr d0, a
+      ldr d1, b
+      ldr d2, c
+      fmov d3, #-2.5
+      fmov d4, #1.0
+      fmov d5, #2.0
+      fmov d6, #3.0
+      fmov d7, #4.0
+      fmov d16, #5.0
+      str d16, [sp, #-16]!
+      bl printf
+      add sp, sp, #16
+      mov w0, #0
+      ldp x29, x30, [sp], #32
+      ret
+      .data
+fmt:  .asciz "%d %f %e %g %s %+.1f %.0f %g %a %G %08.3f\\n"
+str:  .asciz "ok"
+      .p2align 3
+a:    .double 3.25
+b:    .double 0.00001
+c:    .double 0.0001234
+`)
+    expect(out).toBe('7 3.250000 1.000000e-05 0.0001234 ok -2.5 1 2 0x1.8p+1 4 0005.000\n')
+  })
+
+  it('reads floats and doubles with scanf', () => {
+    const { out } = run(
+      `
+      .text
+      .global main
+main:
+      stp x29, x30, [sp, #-32]!
+      adr x0, in
+      add x1, sp, #16
+      add x2, sp, #24
+      bl scanf
+      ldr s0, [sp, #16]
+      fcvt d0, s0
+      ldr d1, [sp, #24]
+      adr x0, out
+      bl printf
+      mov w0, #0
+      ldp x29, x30, [sp], #32
+      ret
+      .data
+in:   .asciz "%f %lf"
+out:  .asciz "%.9g %.17g\\n"
+`,
+      '0.1 -1e-3\n',
+    )
+    expect(out).toBe('0.100000001 -0.001\n')
+  })
+})

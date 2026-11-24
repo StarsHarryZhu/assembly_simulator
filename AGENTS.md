@@ -91,7 +91,9 @@ addresses, vector registers, and GNU as comments, with MIPS unchanged. Phase 1 i
 base, loads and stores, atomics, branches and system instructions, a GNU as assembler, Linux system
 calls, a C library, EL0/EL1 exceptions, the calculator, decoder, formatter, references and 7 examples.
 Encodings match LLVM both ways; 3240 single-instruction cases match this Mac's CPU; about 3.4 million
-instructions per second. Next: phase 2 (scalar floating point and Neon), then SVE and SME; after phase 1
-the owner also wants an engine choice (run on the real CPU when it supports the code, or the simulator).
+instructions per second. Phase 2 is done: scalar floating point (half, single, double, BFloat16, every
+FPCR mode and FPSR flag), all of Neon with its dot product, matrix, complex and BF16 extensions, the
+crypto extensions, printf and scanf of floats, and the float and simd examples; 8107 more cases match
+the CPU. Next: phase 3 (SVE, SVE2, SVE2.1), then SME.
 
 Goals: the AArch64 plugin above, then x86-64, behind the same `IsaPlugin` interface.

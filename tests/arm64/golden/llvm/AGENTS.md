@@ -23,10 +23,17 @@ random words; for handwritten lines, the words clang assembles; for whole progra
 - `mops.json` — memory copy and set.
 - `move.json` — wide moves.
 - `system.json` — system instructions.
+- `fp.json` — scalar floating point.
+- `simd.json` — Neon integer instructions.
+- `simdfp.json` — Neon floating point.
+- `vload.json` — loads and stores of SIMD&FP registers and structures.
+- `crypto.json` — the cryptographic extensions.
 - `class-dp-imm.json` — random words across data processing (immediate).
 - `class-dp-reg.json` — random words across data processing (register).
 - `class-branch-sys.json` — random words across branches and system instructions.
 - `class-ldst.json` — random words across integer loads and stores.
+- `class-ldst-v.json` — random words across SIMD&FP loads and stores.
+- `class-simd-fp.json` — random words across scalar FP, Advanced SIMD and crypto.
 - `sysops.json` — every SYS word in the DC, IC, AT and TLBI spaces.
 - `asm-base.json` — clang's words for `scripts/llvm/asm/base.s`.
 - `prog-data.json` — section bytes of `scripts/llvm/programs/data.s`.
@@ -35,4 +42,5 @@ random words; for handwritten lines, the words clang assembles; for whole progra
 
 ## 4. Progress
 
-Done: fixtures for the A64 base. Not done: later phases.
+Done: fixtures for the A64 base and for floating point, Neon and crypto (22566 encodings plus 6000
+class-wide random words). Not done: SVE and SME.

@@ -18,8 +18,10 @@ English comments, shown when the interface language is English.
 - `factorial.s` — recursive factorial with stack frames.
 - `input.s` — reads two numbers and a name with scanf.
 - `heap.s` — an array from malloc, filled, printed and freed.
+- `float.s` — square root of 2 by Newton's method.
+- `simd.s` — dot products with Neon.
 - `exceptions.s` — faults handled at EL1 and resumed.
 
 ## 4. Progress
 
-Done: all seven examples. Not done: the later phases' examples.
+Done: all nine examples. Not done: the later phases' examples.

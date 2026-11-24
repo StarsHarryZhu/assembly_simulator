@@ -31,8 +31,10 @@ build until all of them are done.
 - `registers.ts` — register ids, banks, system registers and their encodings, register names.
 - `assembler.ts` — the program assembler: directives, macros, conditions, literal pools, layout.
 - `cpu.ts` — the machine: registers, memory permissions, steps, undo, exceptions, C library calls.
+- `softfloat.ts` — IEEE 754 arithmetic in half, single, double and BFloat16 with every FPCR control and FPSR flag.
 - `linux.ts` — the memory map, kernel state and the Linux system calls.
 - `libc.ts` — the built-in C library (printf, scanf, malloc, string functions, glibc's rand).
+- `fpformat.ts` — exact decimal and hex text of floats for printf, and correctly rounded reading for scanf.
 - `decoder.ts` — a word as named bit fields, text and notes.
 - `calc.ts` — one line on its own for the instruction set tab, with demo inputs.
 - `format.ts` — the editor's Format command in the examples' layout.
@@ -48,8 +50,11 @@ loads and stores, LSE, LRCPC, exclusives, branches, system instructions, PAuth a
 simplifications), the assembler matching clang byte for byte on whole programs, the machine with Linux
 system calls, the C library, EL1 exceptions and undo, about 3.4 million instructions per second, seven
 examples in both languages, and 3240 single-instruction cases matching this Mac's CPU (`npm run
-native-golden`; LDXP with one register twice is undefined there, and here).
+native-golden`; LDXP with one register twice is undefined there, and here). Phase 2: scalar floating
+point in half, single, double and BFloat16 with every FPCR mode (FZ, FZ16, DN, AH, FIZ, NEP, AHP) and FPSR
+flag, all of Neon with DotProd, I8MM, FHM, FCMA, RDM, BF16 and FP16, the AES, SHA-1/2/3/512, SM3 and SM4
+instructions, printf `%f %e %g %a` and scanf of floats done exactly as glibc does, and the float and simd
+examples; 22566 more encodings match LLVM and 8107 more cases match this Mac's CPU (SM3 and SM4, which it
+lacks, are checked against their standards' test vectors).
 
-Not done: phases 2–5 (floating point and Neon,
-SVE, SME, polish and release). Later: an engine choice (auto / CPU / simulator) that needs a local helper,
-since a web page cannot run machine code.
+Not done: phases 3–5 (SVE, SME, polish and release).

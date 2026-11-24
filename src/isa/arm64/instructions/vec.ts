@@ -1,0 +1,117 @@
+/**
+ * Lane helpers for the Advanced SIMD semantics: registers as arrays of elements (unsigned bigints), signed
+ * and saturating arithmetic, the shifts of SSHL and friends, and the read-modify-write helpers every Neon
+ * instruction uses. Element sizes are numbered 0–3 for 8, 16, 32 and 64 bits.
+ */
+import type { Cpu } from './types'
+
+export const ESIZE = [8, 16, 32, 64, 128]
+
+export const maskEs = (es: number) => (1n << BigInt(ESIZE[es]!)) - 1n
+export const sx = (v: bigint, es: number) => BigInt.asIntN(ESIZE[es]!, v)
+export const ux = (v: bigint, es: number) => BigInt.asUintN(ESIZE[es]!, v)
+export const ones = (es: number) => maskEs(es)
+
+/** Bytes to elements of size es (unsigned). */
+export function elems(bytes: Uint8Array, es: number): bigint[] {
+  const n = ESIZE[es]! / 8
+  const out: bigint[] = []
+  for (let i = 0; i + n <= bytes.length; i += n) {
+    let v = 0n
+    for (let k = n - 1; k >= 0; k--) v = (v << 8n) | BigInt(bytes[i + k]!)
+    out.push(v)
+  }
+  return out
+}
+
+/** Elements of size es to bytes. */
+export function toBytes(vals: bigint[], es: number): Uint8Array {
+  const n = ESIZE[es]! / 8
+  const out = new Uint8Array(vals.length * n)
+  const m = maskEs(es)
+  vals.forEach((v0, i) => {
+    let v = v0 & m
+    for (let k = 0; k < n; k++) {
+      out[i * n + k] = Number(v & 0xffn)
+      v >>= 8n
+    }
+  })
+  return out
+}
+
+/** Register n as elements: `bytes` 8 or 16. */
+export const readV = (c: Cpu, n: number, es: number, bytes: number) => elems(c.vread(n, bytes), es)
+/** Write elements to register n (the rest of the register becomes zero). */
+export const writeV = (c: Cpu, n: number, vals: bigint[], es: number) => c.vwrite(n, toBytes(vals, es))
+
+/** Saturate an integer to a signed or unsigned element; reports whether it saturated. */
+export function sat(v: bigint, es: number, unsigned: boolean): [bigint, boolean] {
+  const bits = BigInt(ESIZE[es]!)
+  const lo = unsigned ? 0n : -(1n << (bits - 1n))
+  const hi = unsigned ? (1n << bits) - 1n : (1n << (bits - 1n)) - 1n
+  if (v < lo) return [ux(lo, es), true]
+  if (v > hi) return [ux(hi, es), true]
+  return [ux(v, es), false]
+}
+
+/** The integer value of an element, signed or not. */
+export const int = (v: bigint, es: number, unsigned: boolean) => (unsigned ? v : sx(v, es))
+
+/** Shift right of an integer that rounds toward minus infinity (Arm's >> on integers). */
+export const asr = (v: bigint, n: number) => (n >= 0 ? v >> BigInt(n) : v << BigInt(-n))
+
+/**
+ * SSHL, USHL, SRSHL, URSHL, SQSHL, UQSHL, SQRSHL, UQRSHL (register): shift by the signed low byte of the
+ * second operand; negative shifts right. Returns the element and whether it saturated.
+ */
+export function shiftReg(a: bigint, b: bigint, es: number, unsigned: boolean, rounding: boolean, saturating: boolean): [bigint, boolean] {
+  const shift = Number(BigInt.asIntN(8, b))
+  const roundConst = rounding && shift < 0 ? 1n << BigInt(-shift - 1) : 0n
+  const v = asr(int(a, es, unsigned) + roundConst, -shift)
+  if (saturating) return sat(v, es, unsigned)
+  return [ux(v, es), false]
+}
+
+/** Polynomial multiply over GF(2) of two `bits`-bit values (PMUL, PMULL). */
+export function polyMul(a: bigint, b: bigint, bits: number): bigint {
+  let r = 0n
+  for (let i = 0; i < bits; i++) if ((b >> BigInt(i)) & 1n) r ^= a << BigInt(i)
+  return r
+}
+
+/** Count leading sign bits (CLS) and leading zeros (CLZ) of an element. */
+export function clz(v: bigint, es: number): number {
+  const bits = ESIZE[es]!
+  for (let i = bits - 1; i >= 0; i--) if ((v >> BigInt(i)) & 1n) return bits - 1 - i
+  return bits
+}
+export function cls(v: bigint, es: number): number {
+  const bits = ESIZE[es]!
+  const top = (v >> BigInt(bits - 1)) & 1n
+  const x = top ? ~v & maskEs(es) : v
+  return clz(x, es) - 1
+}
+export function popcount(v: bigint): number {
+  let n = 0
+  for (let x = v; x; x &= x - 1n) n++
+  return n
+}
+export function rbit(v: bigint, es: number): bigint {
+  let r = 0n
+  for (let i = 0; i < ESIZE[es]!; i++) if ((v >> BigInt(i)) & 1n) r |= 1n << BigInt(ESIZE[es]! - 1 - i)
+  return r
+}
+
+/** Write a narrowed result: the low half of Vd, or (the "2" forms) the high half keeping the low half. */
+export function writeNarrow(c: Cpu, d: number, vals: bigint[], es: number, upper: boolean): void {
+  if (!upper) return writeV(c, d, vals, es)
+  const old = c.vread(d, 16)
+  old.set(toBytes(vals, es), 8)
+  c.vwrite(d, old)
+}
+
+/** The elements of a source's lower or upper half (the "2" forms read the upper half). */
+export function half(c: Cpu, n: number, es: number, upper: boolean): bigint[] {
+  const all = readV(c, n, es, 16)
+  return upper ? all.slice(all.length / 2) : all.slice(0, all.length / 2)
+}

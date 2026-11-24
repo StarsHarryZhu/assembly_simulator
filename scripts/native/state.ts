@@ -52,3 +52,68 @@ export function initialState(seed: number, ptr: number[], small: number[]): Nati
   for (let i = 0; i < BUF_SIZE; i++) memory[i] = Math.floor(r() * 256)
   return { x, nzcv, memory }
 }
+
+/** Values worth having in floating-point lanes, per element size (h, s, d): zeros, infinities, NaNs, denormals, extremes. */
+function specials(bits: number): bigint[] {
+  const e = bits === 16 ? 5 : bits === 32 ? 8 : 11
+  const f = bits - 1 - e
+  const sign = 1n << BigInt(bits - 1)
+  const expAll = ((1n << BigInt(e)) - 1n) << BigInt(f)
+  const one = ((1n << BigInt(e - 1)) - 1n) << BigInt(f)
+  const quiet = 1n << BigInt(f - 1)
+  return [0n, sign, expAll, sign | expAll, expAll | quiet, expAll | quiet | 5n, expAll | 1n, sign | expAll | 3n, 1n, (1n << BigInt(f)) - 1n, 1n << BigInt(f), sign | 1n, expAll - 1n, one, sign | one, one | quiet]
+}
+
+export interface VectorState {
+  /** v0–v31 as 128-bit values. */
+  v: bigint[]
+  /** A random FPCR (rounding mode, FZ, DN, AH, FIZ, NEP, FZ16, AHP), for the floating-point cases. */
+  fpcr: number
+}
+
+/**
+ * The SIMD&FP registers and an FPCR for a seed, from a generator of their own so the general-purpose
+ * state of a seed stays as it was. Each register holds random bits, or lanes of one element size mixing
+ * special values, numbers near 1 (where rounding shows) and random bits.
+ */
+export function vectorState(seed: number): VectorState {
+  const r = rng(seed ^ 0x5bd1e995)
+  const bitsOf = (n: number) => {
+    let v = 0n
+    for (let i = 0; i < n; i += 32) v = (v << 32n) | BigInt(Math.floor(r() * 2 ** 32))
+    return v & ((1n << BigInt(n)) - 1n)
+  }
+  const v = Array.from({ length: 32 }, () => {
+    if (r() < 0.25) return bitsOf(128)
+    const bits = [16, 32, 64][Math.floor(r() * 3)]!
+    const e = bits === 16 ? 5 : bits === 32 ? 8 : 11
+    const f = bits - 1 - e
+    const sp = specials(bits)
+    let out = 0n
+    for (let lane = 128 / bits - 1; lane >= 0; lane--) {
+      const pick = r()
+      let x: bigint
+      if (pick < 0.25) x = bitsOf(bits)
+      else if (pick < 0.45) x = sp[Math.floor(r() * sp.length)]!
+      else {
+        // ±(1.fraction) × 2^k with k near 0, sometimes with few fraction bits (exact halves, small integers).
+        const bias = (1 << (e - 1)) - 1
+        const k = Math.floor(r() * 24) - 8
+        const frac = r() < 0.5 ? bitsOf(f) : bitsOf(3) << BigInt(f - 3)
+        x = (BigInt(r() < 0.5 ? 1 : 0) << BigInt(bits - 1)) | (BigInt(bias + k) << BigInt(f)) | frac
+      }
+      out = (out << BigInt(bits)) | x
+    }
+    return out
+  })
+  let fpcr = 0
+  if (r() < 0.6) fpcr |= Math.floor(r() * 4) << 22
+  if (r() < 0.2) fpcr |= 1 << 24 // FZ
+  if (r() < 0.2) fpcr |= 1 << 25 // DN
+  if (r() < 0.2) fpcr |= 1 << 19 // FZ16
+  if (r() < 0.2) fpcr |= 2 // AH
+  if (r() < 0.1) fpcr |= 1 // FIZ
+  if (r() < 0.2) fpcr |= 4 // NEP
+  if (r() < 0.05) fpcr |= 1 << 26 // AHP
+  return { v, fpcr }
+}

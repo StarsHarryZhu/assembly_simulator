@@ -2,7 +2,8 @@
  * AArch64 registers: their flat ids (see IsaPlugin.registers), names, and the banks the register panel shows.
  *
  * Ids: x0–x30 0–30, sp 31 (the stack pointer of the current exception level), pc 32, the N Z C V flags
- * 33–36, the system registers from 140. Ids 40–132 are kept for the SIMD, SVE and SME registers of later phases.
+ * 33–36, the SIMD&FP registers v0–v31 40–71, the system registers from 140. Ids 72–132 are kept for the
+ * SVE and SME registers of later phases.
  */
 import { T, type Text } from '../../core/i18n'
 import type { RegisterBank, RegisterSpec } from '../../core/isa'
@@ -14,6 +15,8 @@ export const FLAG_Z = 34
 export const FLAG_C = 35
 export const FLAG_V = 36
 export const FP_REG = 29
+/** v0, the first SIMD&FP register: v<n> is V0 + n. */
+export const V0 = 40
 export const LR = 30
 
 /** System registers the machine keeps, with their ids and MRS/MSR encodings (o0:op1:CRn:CRm:op2 as 3:op1:n:m:op2). */
@@ -73,6 +76,8 @@ export const SYSREGS: SysRegDef[] = [
   sys('ID_AA64MMFR1_EL1', sysEnc(3, 0, 0, 7, 1), 1, null, T('内存模型特性 1', 'Memory model features 1')),
   sys('ID_AA64MMFR2_EL1', sysEnc(3, 0, 0, 7, 2), 1, null, T('内存模型特性 2', 'Memory model features 2')),
   sys('ID_AA64DFR0_EL1', sysEnc(3, 0, 0, 5, 0), 1, null, T('调试特性 0', 'Debug features 0')),
+  sys('FPCR', sysEnc(3, 3, 4, 4, 0), 0, 0, T('浮点控制：舍入方式 RMode（第 23..22 位）、清零 FZ、默认 NaN DN、替代处理 AH 等', 'Floating-point control: rounding mode RMode (bits 23..22), flush to zero FZ, default NaN DN, alternate handling AH and more')),
+  sys('FPSR', sysEnc(3, 3, 4, 4, 1), 0, 0, T('浮点状态：累计的异常标志 IOC DZC OFC UFC IXC IDC（第 7..0 位），饱和标志 QC（第 27 位）', 'Floating-point status: cumulative exceptions IOC DZC OFC UFC IXC IDC (bits 7..0), saturation QC (bit 27)')),
 ]
 
 export const SYSREG_BY_ENC = new Map(SYSREGS.map((r) => [r.enc, r]))
@@ -91,6 +96,8 @@ export const ESR_EL1 = sysId('ESR_EL1')
 export const FAR_EL1 = sysId('FAR_EL1')
 export const VBAR_EL1 = sysId('VBAR_EL1')
 export const NZCV_SYS = sysId('NZCV')
+export const FPCR_ID = sysId('FPCR')
+export const FPSR_ID = sysId('FPSR')
 
 export const REGISTER_COUNT = nextId
 
@@ -109,6 +116,13 @@ function gprNote(n: number): Text {
   if (n < 8) return T(`第 ${n + 1} 个参数`, `Argument ${n + 1}`)
   if (n < 16) return T('临时寄存器（调用者保存）', 'Temporary (caller-saved)')
   return T('被调用者保存的寄存器', 'Callee-saved register')
+}
+
+function vNote(n: number): Text {
+  if (n === 0) return T('第 1 个浮点或向量参数和返回值；它的低位是 b0 h0 s0 d0 q0', 'First FP or vector argument and return value; its low parts are b0 h0 s0 d0 q0')
+  if (n < 8) return T(`第 ${n + 1} 个浮点或向量参数`, `FP or vector argument ${n + 1}`)
+  if (n < 16) return T('被调用者保存（只有低 64 位 d 寄存器）', 'Callee-saved (only the low 64 bits, the d register)')
+  return T('临时寄存器（调用者保存）', 'Temporary (caller-saved)')
 }
 
 const gprs: RegisterSpec[] = Array.from({ length: 31 }, (_, n) => ({ id: n, name: `x${n}`, number: n, bits: 64, kind: 'int' as const, note: gprNote(n) }))
@@ -131,6 +145,15 @@ export const REGISTER_BANKS: RegisterBank[] = [
       { id: FLAG_Z, name: 'Z', bits: 1, kind: 'flag', note: T('零：结果为 0', 'Zero: the result is 0') },
       { id: FLAG_C, name: 'C', bits: 1, kind: 'flag', note: T('进位：无符号加法溢出，或减法没有借位', 'Carry: unsigned overflow on add, or no borrow on subtract') },
       { id: FLAG_V, name: 'V', bits: 1, kind: 'flag', note: T('溢出：有符号结果超出范围', 'Overflow: the signed result is out of range') },
+    ],
+  },
+  {
+    id: 'simd',
+    title: T('浮点和向量寄存器', 'FP and vector registers'),
+    registers: [
+      ...Array.from({ length: 32 }, (_, n): RegisterSpec => ({ id: V0 + n, name: `v${n}`, number: n, bits: 128, kind: 'vector', note: vNote(n) })),
+      { id: FPCR_ID, name: 'FPCR', bits: 32, kind: 'special', note: SYSREG_BY_ID.get(FPCR_ID)!.note },
+      { id: FPSR_ID, name: 'FPSR', bits: 32, kind: 'special', note: SYSREG_BY_ID.get(FPSR_ID)!.note },
     ],
   },
   {
@@ -196,3 +219,25 @@ export const GPR_WORDS = [
   'ip0',
   'ip1',
 ]
+
+/** A SIMD&FP register as written: b/h/s/d/q n (scalar), v n with an arrangement (.4s) or an element size (.s). */
+export interface VregRef {
+  n: number
+  /** 'b' 'h' 's' 'd' 'q' for scalar names, 'v' for vector names. */
+  kind: string
+  /** Vector arrangement, e.g. '4s', '16b', or just an element size like 's' (before an index); '' for bare v0. */
+  arr: string
+}
+
+/** Read a SIMD&FP register name: b0–b31, h, s, d, q, and v0–v31 with an optional .arrangement. */
+export function parseVreg(name: string): VregRef | null {
+  const m = /^([bhsdqv])(\d{1,2})(?:\.(\d*[bhsdq]))?$/.exec(name.toLowerCase())
+  if (!m) return null
+  const n = Number(m[2])
+  if (n > 31 || (m[2]!.length > 1 && m[2]![0] === '0')) return null
+  if (m[1] !== 'v' && m[3] !== undefined) return null
+  return { n, kind: m[1]!, arr: m[3] ?? '' }
+}
+
+/** Every SIMD&FP register name, for highlighting and completion. */
+export const VREG_WORDS = ['v', 'q', 'd', 's', 'h', 'b'].flatMap((k) => Array.from({ length: 32 }, (_, i) => `${k}${i}`))

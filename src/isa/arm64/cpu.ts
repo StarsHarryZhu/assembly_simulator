@@ -36,6 +36,7 @@ import {
   type OsState,
 } from './linux'
 import { libcAt, type Args } from './libc'
+import { FpEnv, FPCR_MASK, NEP } from './softfloat'
 import {
   CURRENT_EL,
   DAIF,
@@ -46,6 +47,8 @@ import {
   FLAG_N,
   FLAG_V,
   FLAG_Z,
+  FPCR_ID,
+  FPSR_ID,
   NZCV_SYS,
   PC,
   REGISTER_COUNT,
@@ -56,6 +59,7 @@ import {
   SPSR_EL1,
   SYSREG_BY_ENC,
   SYSREG_BY_NAME,
+  V0,
   VBAR_EL1,
 } from './registers'
 
@@ -113,11 +117,12 @@ const FIXED_SYSREGS: Record<string, bigint> = {
   ID_AA64ISAR0_EL1: 0x0221_1111_1021_2120n,
   // DPB2, PAuth, JSCVT, FCMA, LRCPC2, PACGA, FRINTTS, SB, SPECRES, BF16, I8MM, XS.
   ID_AA64ISAR1_EL1: 0x0110_1111_1021_1102n,
-  // MOPS, BC, CLRBHB, PRFMSLC, CSSC.
-  ID_AA64ISAR2_EL1: 0x0010_0100_1011_0000n,
+  // MOPS, BC, CLRBHB, PRFMSLC, CSSC, RPRES.
+  ID_AA64ISAR2_EL1: 0x0010_0100_1011_0010n,
   // 48-bit physical addresses, 16-bit ASIDs, 4 KB pages.
   ID_AA64MMFR0_EL1: 0x0000_0000_0000_0025n,
-  ID_AA64MMFR1_EL1: 0n,
+  // AFP (FPCR.FIZ, AH, NEP).
+  ID_AA64MMFR1_EL1: 1n << 44n,
   // LSE2 (unaligned atomics within 16 bytes).
   ID_AA64MMFR2_EL1: 0x0000_0001_0000_0000n,
   ID_AA64DFR0_EL1: 0x0000_0000_0000_0006n,
@@ -163,6 +168,10 @@ class StepLog {
 }
 
 const SYS_OFFSET = 140
+/** Bytes per SIMD&FP register in storage (2048-bit SVE vectors). */
+const VMAX = 256
+/** FPSR.QC, the cumulative saturation bit. */
+const QC = 1 << 27
 
 export class ArmMachine implements Machine, Cpu, Host {
   readonly program: Program
@@ -177,6 +186,11 @@ export class ArmMachine implements Machine, Cpu, Host {
   private spsel = 0
   private daif = 0
   private sys: bigint[] = []
+  /** SIMD&FP registers, VMAX bytes each (room for the longest SVE vector); the low `vlen` bytes are live. */
+  private vr = new Uint8Array(32 * VMAX)
+  private vlen = 16
+  private fpcrv = 0
+  private fpsrv = 0
   private mem = new WideMemory()
   private status = new Uint8Array(REGISTER_COUNT)
   private written = new Map<number, number>()
@@ -248,6 +262,9 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.spsel = 0
     this.daif = 0
     this.sys = new Array(REGISTER_COUNT - SYS_OFFSET).fill(0n)
+    this.vr.fill(0)
+    this.fpcrv = 0
+    this.fpsrv = 0
     this.sp1 = vaOf(KSTACK_TOP)
     if (this.hasVectors) this.sys[VBAR_EL1 - SYS_OFFSET] = vaOf(this.program.symbols.vectors ?? KTEXT_BASE)
     this.mem = new WideMemory()
@@ -448,7 +465,8 @@ export class ArmMachine implements Machine, Cpu, Host {
       return
     }
     const fn = libcAt(addr)!
-    const args: Args = (i) => (i < 8 ? this.x(i) : this.load((this.xsp(31) + BigInt(8 * (i - 8))) & M64, 8))
+    const stack = (i: number) => this.load((this.xsp(31) + BigInt(8 * i)) & M64, 8)
+    const args: Args = Object.assign((i: number) => (i < 8 ? this.x(i) : stack(i - 8)), { fp: (i: number) => this.vget(i, 16), stack })
     const result = fn.run(this, args)
     if (result !== null) this.setX(0, result)
     if (this.haltReason) {
@@ -544,6 +562,11 @@ export class ArmMachine implements Machine, Cpu, Host {
     return this.rawReg(id)
   }
 
+  readRegisterBytes(id: number): Uint8Array {
+    if (id >= V0 && id < V0 + 32) return this.vr.slice((id - V0) * VMAX, (id - V0) * VMAX + this.vlen)
+    return new Uint8Array(0)
+  }
+
   registerStatus(id: number): RegStatus {
     return this.status[id] as RegStatus
   }
@@ -583,6 +606,7 @@ export class ArmMachine implements Machine, Cpu, Host {
 
   private rawReg(id: number): RegValue {
     if (id < 31) return this.xr[id]!
+    if (id >= V0 && id < V0 + 32) return this.vbig(id - V0, this.vlen)
     if (id === SP) return this.elv && this.spsel ? this.sp1 : this.sp0
     if (id === PC) return vaOf(this.pcReg)
     if (id <= FLAG_V) return (this.nzcv >> (FLAG_V - id)) & 1
@@ -592,6 +616,7 @@ export class ArmMachine implements Machine, Cpu, Host {
 
   private setRawReg(id: number, v: RegValue): void {
     if (id < 31) this.xr[id] = BigInt(v)
+    else if (id >= V0 && id < V0 + 32) this.vstore(id - V0, this.vlen, BigInt(v))
     else if (id === SP) {
       if (this.elv && this.spsel) this.sp1 = BigInt.asUintN(64, BigInt(v))
       else this.sp0 = BigInt.asUintN(64, BigInt(v))
@@ -618,6 +643,10 @@ export class ArmMachine implements Machine, Cpu, Host {
         return this.sp0
       case SP_EL1:
         return this.sp1
+      case FPCR_ID:
+        return BigInt(this.fpcrv)
+      case FPSR_ID:
+        return BigInt(this.fpsrv)
     }
     return this.sys[id - SYS_OFFSET] ?? 0n
   }
@@ -641,6 +670,12 @@ export class ArmMachine implements Machine, Cpu, Host {
         return
       case SP_EL1:
         this.sp1 = v
+        return
+      case FPCR_ID:
+        this.fpcrv = Number(v & BigInt(FPCR_MASK))
+        return
+      case FPSR_ID:
+        this.fpsrv = Number(v & BigInt(QC | 0x9f))
         return
     }
     this.sys[id - SYS_OFFSET] = v
@@ -668,6 +703,62 @@ export class ArmMachine implements Machine, Cpu, Host {
   private writeSys(id: number, v: bigint): void {
     this.markWrite(id, this.rawReg(id))
     this.setRawReg(id, v)
+  }
+
+  /** The low `bytes` bytes of SIMD&FP register n as a little-endian number. */
+  private vbig(n: number, bytes: number): bigint {
+    const base = n * VMAX
+    let v = 0n
+    for (let i = bytes - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.vr[base + i]!)
+    return v
+  }
+  private vstore(n: number, bytes: number, v: bigint): void {
+    const base = n * VMAX
+    for (let i = 0; i < bytes; i++) {
+      this.vr[base + i] = Number(v & 0xffn)
+      v >>= 8n
+    }
+  }
+
+  /* ---------------------------------------------------------------- Cpu: SIMD&FP */
+
+  vread(n: number, bytes: number): Uint8Array {
+    this.markRead(V0 + n)
+    return this.vr.slice(n * VMAX, n * VMAX + bytes)
+  }
+  vwrite(n: number, data: Uint8Array): void {
+    const id = V0 + n
+    this.markWrite(id, this.vbig(n, this.vlen))
+    const base = n * VMAX
+    this.vr.set(data, base)
+    this.vr.fill(0, base + data.length, base + this.vlen)
+  }
+  vget(n: number, bytes: number): bigint {
+    this.markRead(V0 + n)
+    return this.vbig(n, bytes)
+  }
+  vset(n: number, bytes: number, v: bigint, merge?: number): void {
+    const id = V0 + n
+    // FEAT_AFP's FPCR.NEP: a scalar result keeps the other bytes of the source register `merge`.
+    const keep = merge !== undefined && this.fpcrv & NEP ? this.vbig(merge, this.vlen) : 0n
+    if (merge !== undefined && this.fpcrv & NEP && merge !== n) this.markRead(V0 + merge)
+    this.markWrite(id, this.vbig(n, this.vlen))
+    const mask = (1n << BigInt(bytes * 8)) - 1n
+    this.vstore(n, this.vlen, (keep & ~mask) | (v & mask))
+  }
+  fpEnv(): FpEnv {
+    this.markRead(FPCR_ID)
+    return new FpEnv(this.fpcrv)
+  }
+  get fpcr(): number {
+    return this.fpcrv
+  }
+  fpFlags(env: FpEnv): void {
+    const next = this.fpsrv | (env.flags & 0x9f)
+    if (next !== this.fpsrv) this.writeSys(FPSR_ID, BigInt(next))
+  }
+  setQC(): void {
+    if (!(this.fpsrv & QC)) this.writeSys(FPSR_ID, BigInt(this.fpsrv | QC))
   }
 
   /* ---------------------------------------------------------------- Cpu: registers */
@@ -857,6 +948,9 @@ export class ArmMachine implements Machine, Cpu, Host {
       case 8:
         return this.mem.setDword(a, v)
     }
+    // 16 bytes (Q registers, pairs of doublewords).
+    this.mem.setDword(a, v & 0xffff_ffff_ffff_ffffn)
+    this.mem.setDword(a + 8, (v >> 64n) & 0xffff_ffff_ffff_ffffn)
   }
 
   load(addr: bigint, size: number, acc = 0): bigint {
