@@ -16,11 +16,16 @@ decoder, formatter, references, both languages) and throughput.
 ## 3. Contents
 
 - `llvm.test.ts` — disassembly, re-assembly and unallocated space against LLVM; programs against clang.
-- `llvm-scope.ts` — text normalisation and the out-of-scope instruction list.
+- `llvm-scope.ts` — text normalisation and the out-of-scope instruction list (newer SVE extensions included).
 - `machine.test.ts` — programs, system calls, C library, faults, EL1 exceptions, undo and colours.
-- `examples.test.ts` — the examples: same code in both languages, formatted, expected output.
+- `examples.test.ts` — the examples: same code in both languages, formatted, expected output (the sve
+  example at several vector lengths).
 - `plugin.test.ts` — both languages, calculator, decoder, formatter and references.
-- `native.test.ts` — every native case replayed on our machine: registers, vector registers, flags, FPSR, buffer and faults.
+- `native.test.ts` — every native case replayed on our machine: registers, vector registers (Z and P for
+  SVE, at the recorded vector length), flags, FPSR, buffer and faults.
+- `sve.test.ts` — the SVE instructions streaming mode forbids: first-fault loads and the FFR, gathers,
+  scatters, FADDA, FTMAD, FEXPA, COMPACT, ADR, quadword permutes, SVE2 crypto, bit permutes, histograms
+  and matrix multiplies (against Neon per 128-bit segment where it has them).
 - `softfloat.test.ts` — the soft-float core against the host's double and single arithmetic.
 - `crypto.test.ts` — SM3 and SM4 (absent on this CPU) against their standards' test vectors.
 - `speed.test.ts` — at least 2 million instructions per second.
@@ -28,5 +33,5 @@ decoder, formatter, references, both languages) and throughput.
 
 ## 4. Progress
 
-Done: phase 1 and phase 2 coverage, including 11347 native-CPU behaviour cases (3240 for the base,
-8107 for floating point, Neon and crypto). Not done: SVE and SME (phases 3 and 4).
+Done: phase 1, 2 and 3 coverage, including 16902 native-CPU behaviour cases (3240 for the base, 8107 for
+floating point, Neon and crypto, 5555 for SVE in streaming mode). Not done: SME (phase 4).

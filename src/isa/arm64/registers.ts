@@ -2,8 +2,9 @@
  * AArch64 registers: their flat ids (see IsaPlugin.registers), names, and the banks the register panel shows.
  *
  * Ids: x0–x30 0–30, sp 31 (the stack pointer of the current exception level), pc 32, the N Z C V flags
- * 33–36, the SIMD&FP registers v0–v31 40–71, the system registers from 140. Ids 72–132 are kept for the
- * SVE and SME registers of later phases.
+ * 33–36, the SIMD&FP registers v0–v31 40–71, the SVE registers z0–z31 72–103 (z<n> is the whole register
+ * whose low 128 bits are v<n>, so both ids show the same storage), p0–p15 104–119 and FFR 120, and the
+ * system registers from 140. Ids 121–132 are kept for the SME registers of a later phase.
  */
 import { T, type Text } from '../../core/i18n'
 import type { RegisterBank, RegisterSpec } from '../../core/isa'
@@ -18,6 +19,12 @@ export const FP_REG = 29
 /** v0, the first SIMD&FP register: v<n> is V0 + n. */
 export const V0 = 40
 export const LR = 30
+/** z0: z<n> is Z0 + n, the same register as v<n> at the full vector length. */
+export const Z0 = 72
+/** p0: p<n> is P0 + n (0–15). */
+export const P0 = 104
+/** The first-fault register, kept like a 17th predicate. */
+export const FFR = 120
 
 /** System registers the machine keeps, with their ids and MRS/MSR encodings (o0:op1:CRn:CRm:op2 as 3:op1:n:m:op2). */
 export interface SysRegDef {
@@ -77,6 +84,7 @@ export const SYSREGS: SysRegDef[] = [
   sys('ID_AA64MMFR2_EL1', sysEnc(3, 0, 0, 7, 2), 1, null, T('内存模型特性 2', 'Memory model features 2')),
   sys('ID_AA64DFR0_EL1', sysEnc(3, 0, 0, 5, 0), 1, null, T('调试特性 0', 'Debug features 0')),
   sys('FPCR', sysEnc(3, 3, 4, 4, 0), 0, 0, T('浮点控制：舍入方式 RMode（第 23..22 位）、清零 FZ、默认 NaN DN、替代处理 AH 等', 'Floating-point control: rounding mode RMode (bits 23..22), flush to zero FZ, default NaN DN, alternate handling AH and more')),
+  sys('ZCR_EL1', sysEnc(3, 0, 1, 2, 0), 1, 1, T('SVE 控制：LEN（第 3..0 位）把向量长度限制在 (LEN + 1) × 128 位以内', 'SVE control: LEN (bits 3..0) limits the vector length to (LEN + 1) × 128 bits'), true),
   sys('FPSR', sysEnc(3, 3, 4, 4, 1), 0, 0, T('浮点状态：累计的异常标志 IOC DZC OFC UFC IXC IDC（第 7..0 位），饱和标志 QC（第 27 位）', 'Floating-point status: cumulative exceptions IOC DZC OFC UFC IXC IDC (bits 7..0), saturation QC (bit 27)')),
 ]
 
@@ -98,6 +106,7 @@ export const VBAR_EL1 = sysId('VBAR_EL1')
 export const NZCV_SYS = sysId('NZCV')
 export const FPCR_ID = sysId('FPCR')
 export const FPSR_ID = sysId('FPSR')
+export const ZCR_EL1 = sysId('ZCR_EL1')
 
 export const REGISTER_COUNT = nextId
 
@@ -123,6 +132,17 @@ function vNote(n: number): Text {
   if (n < 8) return T(`第 ${n + 1} 个浮点或向量参数`, `FP or vector argument ${n + 1}`)
   if (n < 16) return T('被调用者保存（只有低 64 位 d 寄存器）', 'Callee-saved (only the low 64 bits, the d register)')
   return T('临时寄存器（调用者保存）', 'Temporary (caller-saved)')
+}
+
+function zNote(n: number): Text {
+  const low = T(`低 128 位就是 v${n}`, `its low 128 bits are v${n}`)
+  if (n < 8) return T(`SVE 向量寄存器，长度 VL；第 ${n + 1} 个向量参数；${low.zh}`, `SVE vector register of VL bits; vector argument ${n + 1}; ${low.en}`)
+  return T(`SVE 向量寄存器，长度 VL；${low.zh}`, `SVE vector register of VL bits; ${low.en}`)
+}
+
+function pNote(n: number): Text {
+  const gov = n < 8 ? T('可以作执行谓词 Pg', 'can govern instructions as Pg') : T('只能作结果或源操作数（Pg 只能是 p0–p7）', 'only a result or source (Pg must be p0–p7)')
+  return T(`谓词寄存器：向量的每个字节一位，元素看它第一个字节的那一位；${gov.zh}`, `Predicate register: one bit per vector byte, each element uses the bit of its first byte; ${gov.en}`)
 }
 
 const gprs: RegisterSpec[] = Array.from({ length: 31 }, (_, n) => ({ id: n, name: `x${n}`, number: n, bits: 64, kind: 'int' as const, note: gprNote(n) }))
@@ -151,15 +171,25 @@ export const REGISTER_BANKS: RegisterBank[] = [
     id: 'simd',
     title: T('浮点和向量寄存器', 'FP and vector registers'),
     registers: [
-      ...Array.from({ length: 32 }, (_, n): RegisterSpec => ({ id: V0 + n, name: `v${n}`, number: n, bits: 128, kind: 'vector', note: vNote(n) })),
+      ...Array.from({ length: 32 }, (_, n): RegisterSpec => ({ id: V0 + n, name: `v${n}`, number: n, bits: 128, kind: 'vector', partOf: Z0 + n, note: vNote(n) })),
       { id: FPCR_ID, name: 'FPCR', bits: 32, kind: 'special', note: SYSREG_BY_ID.get(FPCR_ID)!.note },
       { id: FPSR_ID, name: 'FPSR', bits: 32, kind: 'special', note: SYSREG_BY_ID.get(FPSR_ID)!.note },
     ],
   },
   {
+    id: 'sve',
+    title: T('SVE 寄存器', 'SVE registers'),
+    registers: [
+      ...Array.from({ length: 32 }, (_, n): RegisterSpec => ({ id: Z0 + n, name: `z${n}`, number: n, bits: 2048, kind: 'vector', note: zNote(n) })),
+      ...Array.from({ length: 16 }, (_, n): RegisterSpec => ({ id: P0 + n, name: `p${n}`, number: n, bits: 256, kind: 'predicate', note: pNote(n) })),
+      { id: FFR, name: 'ffr', bits: 256, kind: 'predicate', note: T('首次故障寄存器：首次故障和不故障加载把读不到的元素及其后的位清零', 'First-fault register: first-fault and non-fault loads clear the bits of the elements they could not read, and those after them') },
+      { id: ZCR_EL1, name: 'ZCR_EL1', bits: 64, kind: 'special', note: SYSREG_BY_ID.get(ZCR_EL1)!.note },
+    ],
+  },
+  {
     id: 'sys',
     title: T('系统寄存器', 'System registers'),
-    registers: SYSREGS.filter((r) => r.shown).map((r) => ({ id: r.id, name: r.name, bits: 64, kind: 'special' as const, note: r.note })),
+    registers: SYSREGS.filter((r) => r.shown && r.id !== ZCR_EL1).map((r) => ({ id: r.id, name: r.name, bits: 64, kind: 'special' as const, note: r.note })),
   },
 ]
 
@@ -241,3 +271,27 @@ export function parseVreg(name: string): VregRef | null {
 
 /** Every SIMD&FP register name, for highlighting and completion. */
 export const VREG_WORDS = ['v', 'q', 'd', 's', 'h', 'b'].flatMap((k) => Array.from({ length: 32 }, (_, i) => `${k}${i}`))
+
+/** An SVE register as written: z0–z31, p0–p15, pn0–pn15 (predicate-as-counter), with an optional .b/.h/.s/.d/.q. */
+export interface SveRegRef {
+  kind: 'z' | 'p' | 'pn'
+  n: number
+  /** Element size 0–4 (b h s d q), or null without a suffix. */
+  es: number | null
+}
+
+export function parseSveReg(name: string): SveRegRef | null {
+  const m = /^(z|pn|p)(\d{1,2})(?:\.([bhsdq]))?$/.exec(name.toLowerCase())
+  if (!m) return null
+  const n = Number(m[2])
+  if (n > (m[1] === 'z' ? 31 : 15) || (m[2]!.length > 1 && m[2]![0] === '0')) return null
+  return { kind: m[1] as SveRegRef['kind'], n, es: m[3] ? 'bhsdq'.indexOf(m[3]) : null }
+}
+
+/** Every SVE register name, for highlighting and completion. */
+export const SVE_WORDS = [
+  ...Array.from({ length: 32 }, (_, i) => `z${i}`),
+  ...Array.from({ length: 16 }, (_, i) => `p${i}`),
+  ...Array.from({ length: 16 }, (_, i) => `pn${i}`),
+  'ffr',
+]

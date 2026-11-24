@@ -487,7 +487,7 @@ const FP_IMM = Array.from({ length: 256 }, (_, i) => fpImm8(i))
 /** A float as written: 1.0, 0.5, -2.0 (always with a decimal point). */
 export const fpText = (v: number) => (Number.isInteger(v) ? v.toFixed(1) : String(v))
 
-function readFloat(s: OperandStream): number | null {
+export function readFloat(s: OperandStream): number | null {
   let sign = 1
   let k = 0
   if (s.isPunct('-')) {

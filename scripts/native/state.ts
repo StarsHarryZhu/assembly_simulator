@@ -31,10 +31,10 @@ export interface NativeState {
 }
 
 /**
- * The starting state for a seed. `ptr` registers get BASE_OFFSET (an offset into the buffer), `small`
+ * The starting state for a seed. `ptr` registers get `base` (an offset into the buffer), `small`
  * registers a value below 64 (register offsets), the rest a mix of edge values and random bits.
  */
-export function initialState(seed: number, ptr: number[], small: number[]): NativeState {
+export function initialState(seed: number, ptr: number[], small: number[], size = BUF_SIZE, base = BASE_OFFSET): NativeState {
   const r = rng(seed)
   const word = () => BigInt(Math.floor(r() * 2 ** 32))
   const x = Array.from({ length: 31 }, (_, n) => {
@@ -46,10 +46,10 @@ export function initialState(seed: number, ptr: number[], small: number[]): Nati
   })
   // Register 31 is the zero register (or sp, which cases never name): there is nothing to set.
   for (const n of small) if (n < 31) x[n] = BigInt(Math.floor(r() * 64))
-  for (const n of ptr) if (n < 31) x[n] = BigInt(BASE_OFFSET)
+  for (const n of ptr) if (n < 31) x[n] = BigInt(base)
   const nzcv = Math.floor(r() * 16)
-  const memory = new Uint8Array(BUF_SIZE)
-  for (let i = 0; i < BUF_SIZE; i++) memory[i] = Math.floor(r() * 256)
+  const memory = new Uint8Array(size)
+  for (let i = 0; i < size; i++) memory[i] = Math.floor(r() * 256)
   return { x, nzcv, memory }
 }
 
@@ -72,18 +72,16 @@ export interface VectorState {
 }
 
 /**
- * The SIMD&FP registers and an FPCR for a seed, from a generator of their own so the general-purpose
- * state of a seed stays as it was. Each register holds random bits, or lanes of one element size mixing
- * special values, numbers near 1 (where rounding shows) and random bits.
+ * A generator of 128-bit register values: random bits, or lanes of one element size mixing special values,
+ * numbers near 1 (where rounding shows) and random bits.
  */
-export function vectorState(seed: number): VectorState {
-  const r = rng(seed ^ 0x5bd1e995)
+function chunk128(r: () => number): () => bigint {
   const bitsOf = (n: number) => {
     let v = 0n
     for (let i = 0; i < n; i += 32) v = (v << 32n) | BigInt(Math.floor(r() * 2 ** 32))
     return v & ((1n << BigInt(n)) - 1n)
   }
-  const v = Array.from({ length: 32 }, () => {
+  return () => {
     if (r() < 0.25) return bitsOf(128)
     const bits = [16, 32, 64][Math.floor(r() * 3)]!
     const e = bits === 16 ? 5 : bits === 32 ? 8 : 11
@@ -105,7 +103,18 @@ export function vectorState(seed: number): VectorState {
       out = (out << BigInt(bits)) | x
     }
     return out
-  })
+  }
+}
+
+/**
+ * The SIMD&FP registers and an FPCR for a seed, from a generator of their own so the general-purpose
+ * state of a seed stays as it was. Each register holds random bits, or lanes of one element size mixing
+ * special values, numbers near 1 (where rounding shows) and random bits.
+ */
+export function vectorState(seed: number): VectorState {
+  const r = rng(seed ^ 0x5bd1e995)
+  const chunk = chunk128(r)
+  const v = Array.from({ length: 32 }, chunk)
   let fpcr = 0
   if (r() < 0.6) fpcr |= Math.floor(r() * 4) << 22
   if (r() < 0.2) fpcr |= 1 << 24 // FZ
@@ -116,4 +125,43 @@ export function vectorState(seed: number): VectorState {
   if (r() < 0.2) fpcr |= 4 // NEP
   if (r() < 0.05) fpcr |= 1 << 26 // AHP
   return { v, fpcr }
+}
+
+export interface SveState {
+  /** z0–z31, `vl` bytes each. */
+  z: bigint[]
+  /** p0–p15, one bit per vector byte. */
+  p: bigint[]
+}
+
+/**
+ * The SVE registers for a seed and a vector length in bytes, from a generator of their own. Each Z register
+ * is a run of 128-bit chunks like vectorState's registers; each predicate is all true, all false, random
+ * bits, or one random bit per element of a random size (the form instructions write).
+ */
+export function sveState(seed: number, vl: number): SveState {
+  const r = rng(seed ^ 0x2545f491)
+  const chunk = chunk128(r)
+  const z = Array.from({ length: 32 }, () => {
+    let v = 0n
+    for (let k = 0; k < vl / 16; k++) v = (v << 128n) | chunk()
+    return v
+  })
+  const p = Array.from({ length: 16 }, () => {
+    const pick = r()
+    const bytes = BigInt(vl)
+    if (pick < 0.15) return (1n << bytes) - 1n
+    if (pick < 0.2) return 0n
+    if (pick < 0.35) {
+      let v = 0n
+      for (let i = 0; i < vl; i += 32) v = (v << 32n) | BigInt(Math.floor(r() * 2 ** 32))
+      return v & ((1n << bytes) - 1n)
+    }
+    const step = 1 << Math.floor(r() * 4)
+    const dense = r() < 0.5 ? 0.85 : 0.5
+    let v = 0n
+    for (let i = 0; i < vl; i += step) if (r() < dense) v |= 1n << BigInt(i)
+    return v
+  })
+  return { z, p }
 }

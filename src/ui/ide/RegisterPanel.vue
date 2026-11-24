@@ -49,10 +49,16 @@ function valueOf(m: Machine, r: RegisterSpec): RegValue {
   return m.readRegister(r.id)
 }
 
+/** The width a register has on this machine: vector and predicate registers follow the vector length. */
+function widthOf(m: Machine | null, r: RegisterSpec): number {
+  if (scalar(r) || !m?.readRegisterBytes) return r.bits
+  return m.readRegisterBytes(r.id).length * 8 || r.bits
+}
+
 /** A cell shows at most 64 bits: wider registers show their low 64 after an ellipsis; the details show all. */
-function cellText(r: RegisterSpec, value: RegValue): string {
+function cellText(r: RegisterSpec, value: RegValue, bits: number): string {
   if (r.kind === 'flag') return String(Number(value) & 1)
-  if (r.bits <= 64) return hexBits(value, r.bits)
+  if (bits <= 64) return hexBits(value, bits)
   return '…' + hexBits(BigInt.asUintN(64, BigInt(value)), 64).slice(2)
 }
 
@@ -77,7 +83,7 @@ const view = computed(() => {
       const status = m ? m.registerStatus(r.id) : 0
       return {
         spec: r,
-        text: matrix ? t('点开查看', 'open to view') : cellText(r, value),
+        text: matrix ? t('点开查看', 'open to view') : cellText(r, value, widthOf(m, r)),
         cls: status === WRITTEN ? 'w' : status === READ ? 'r' : 'i',
         now: wrote.has(r.id),
       }
@@ -133,9 +139,17 @@ const detail = computed(() => {
   const bits = spec.bits
   const w = view.value.wrote.get(id)
   const status = m ? m.registerStatus(id) : 0
-  const change = w ? `${hexBits(w.before, bits)} → ${hexBits(w.after, bits)}` : null
+  const change = w ? `${hexBits(w.before, widthOf(m, spec))} → ${hexBits(w.after, widthOf(m, spec))}` : null
+  if (spec.kind === 'predicate') {
+    // One bit per vector byte: an element of the chosen size is active when the bit of its first byte is set.
+    const bytes = m?.readRegisterBytes?.(id) ?? new Uint8Array(Math.ceil(bits / 8))
+    const size = Math.min(laneBytes.value, bytes.length * 8)
+    const bit = (i: number) => (bytes[i >> 3]! >> (i & 7)) & 1
+    const lanes = Array.from({ length: Math.floor((bytes.length * 8) / size) }, (_, i) => ({ i, text: String(bit(i * size)) }))
+    return { spec, scalar: false, hex: '', groups: [] as string[], top: 0, rows: [], lanes, change, status }
+  }
   if (!scalar(spec)) {
-    // Vector, predicate and matrix registers: lanes of the chosen size, lowest lane first.
+    // Vector and matrix registers: lanes of the chosen size, lowest lane first.
     const bytes = m?.readRegisterBytes?.(id) ?? new Uint8Array(Math.ceil(bits / 8))
     const size = Math.min(laneBytes.value, bytes.length)
     const lanes = Array.from({ length: Math.floor(bytes.length / size) }, (_, i) => ({ i, text: laneText(bytes, i * size, size, laneFormat.value) }))
@@ -226,11 +240,14 @@ function toggle(id: number) {
         <div class="lanectl">
           <span class="small muted">{{ t('按', 'Lanes of') }}</span>
           <button v-for="l in LANE_SIZES" :key="l.bytes" class="chip" :aria-pressed="laneBytes === l.bytes" @click="setLanes(l.bytes, null)">{{ l.name }}</button>
-          <span class="small muted">{{ t('显示为', 'shown as') }}</span>
-          <button class="chip" :aria-pressed="laneFormat === 'hex'" @click="setLanes(null, 'hex')">{{ t('十六进制', 'Hex') }}</button>
-          <button class="chip" :aria-pressed="laneFormat === 'int'" @click="setLanes(null, 'int')">{{ t('有符号', 'Signed') }}</button>
-          <button class="chip" :aria-pressed="laneFormat === 'uint'" @click="setLanes(null, 'uint')">{{ t('无符号', 'Unsigned') }}</button>
-          <button class="chip" :aria-pressed="laneFormat === 'float'" @click="setLanes(null, 'float')">{{ t('浮点', 'Float') }}</button>
+          <template v-if="detail.spec.kind !== 'predicate'">
+            <span class="small muted">{{ t('显示为', 'shown as') }}</span>
+            <button class="chip" :aria-pressed="laneFormat === 'hex'" @click="setLanes(null, 'hex')">{{ t('十六进制', 'Hex') }}</button>
+            <button class="chip" :aria-pressed="laneFormat === 'int'" @click="setLanes(null, 'int')">{{ t('有符号', 'Signed') }}</button>
+            <button class="chip" :aria-pressed="laneFormat === 'uint'" @click="setLanes(null, 'uint')">{{ t('无符号', 'Unsigned') }}</button>
+            <button class="chip" :aria-pressed="laneFormat === 'float'" @click="setLanes(null, 'float')">{{ t('浮点', 'Float') }}</button>
+          </template>
+          <span v-else class="small muted">{{ t('每个元素一位：1 = 活跃', 'one bit per element: 1 = active') }}</span>
         </div>
         <div class="lanes mono">
           <span v-for="l in detail.lanes" :key="l.i" class="lane"><small>[{{ l.i }}]</small>{{ l.text }}</span>

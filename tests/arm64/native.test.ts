@@ -2,18 +2,21 @@
  * Behaviour against the real CPU (tests/arm64/golden/native, made by `npm run native-golden` on an Apple
  * silicon Mac): every case starts from the state its seed gives (and the FPCR it records), runs one
  * instruction in our machine, and must end with the same general and vector registers, NZCV, FPSR and
- * buffer bytes, or fault where the CPU faulted.
+ * buffer bytes, or fault where the CPU faulted. SVE fixtures (with `vl`) ran in streaming mode at that vector
+ * length and compare the Z and P registers instead of V.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ArmMachine } from '../../src/isa/arm64/cpu'
-import { applyState, caseProgram, SIM_BUF } from '../../scripts/native/cases'
+import { applySveState, applyState, caseProgram, SIM_BUF, sveInputs } from '../../scripts/native/cases'
 import { BUF_SIZE, initialState, vectorState } from '../../scripts/native/state'
-import { FPSR_ID, V0 } from '../../src/isa/arm64/registers'
+import { FPSR_ID, P0, V0, Z0 } from '../../src/isa/arm64/registers'
 import { ConsoleEnv } from '../helpers'
 
 type Row = [string, string, number, number[], number[], string | null, number, Record<string, string>, [number, number][], number, Record<string, string>, number]
+/** An SVE row has the Z registers where Row has V, then the predicates, then FPSR. */
+type SveRow = [...Row, number?]
 
 const DIR = join(__dirname, 'golden', 'native')
 /** As in scripts/native/harness.c: how far from the buffer a pointer is still shown as an offset. */
@@ -22,13 +25,18 @@ const NEAR = 0x10000n
 describe('behaviour matches the CPU', () => {
   for (const file of readdirSync(DIR).filter((f) => f.endsWith('.json'))) {
     it(file.replace('.json', ''), () => {
-      const { cases } = JSON.parse(readFileSync(join(DIR, file), 'utf8')) as { cases: Row[] }
+      const { cases, vl } = JSON.parse(readFileSync(join(DIR, file), 'utf8')) as { cases: Row[]; vl?: number }
       const problems: string[] = []
-      for (const [text, word, seed, ptr, small, signal, nzcv, regs, memory, fpcr, vregs, fpsr] of cases) {
-        const s = initialState(seed, ptr, small)
+      for (const [text, word, seed, ptr, small, signal, nzcv, regs, memory, fpcr, vregs, fpsr, pregs] of cases as SveRow[]) {
+        // SVE rows: [.., fpcr, zregs, pregs, fpsr]; the others: [.., fpcr, vregs, fpsr].
+        const sveFpsr = vl ? (pregs as unknown as number) : fpsr
+        const zp = vl ? (fpsr as unknown as Record<string, string>) : {}
+        const inputs = vl ? sveInputs(seed, ptr, small, vl) : null
+        const s = inputs ? inputs.state : initialState(seed, ptr, small)
         const vs = vectorState(seed)
-        const m = new ArmMachine(caseProgram(Number(word), s.memory), new ConsoleEnv())
-        applyState(m, s, ptr, vs, fpcr)
+        const m = new ArmMachine(caseProgram(Number(word), s.memory), new ConsoleEnv(), vl ? { settings: { vl: vl * 8 } } : undefined)
+        if (inputs) applySveState(m, s, ptr, inputs.sve, fpcr)
+        else applyState(m, s, ptr, vs, fpcr)
         m.step()
         const halt = m.halted
         if (signal) {
@@ -52,15 +60,27 @@ describe('behaviour matches the CPU', () => {
         const flags = [33, 34, 35, 36].reduce((a, id) => (a << 1) | Number(m.readRegister(id)), 0)
         if (flags !== nzcv) problems.push(`${text} (seed ${seed}): NZCV = ${flags.toString(2).padStart(4, '0')}, the CPU ${nzcv.toString(2).padStart(4, '0')}`)
         const fpcrNote = fpcr ? ` [FPCR ${fpcr.toString(16)}]` : ''
-        for (let n = 0; n < 32; n++) {
-          const want = vregs[n] ?? vs.v[n]!.toString(16)
-          const got = BigInt(m.readRegister(V0 + n)).toString(16)
-          if (got !== want) problems.push(`${text} (seed ${seed})${fpcrNote}: v${n} = ${got.padStart(32, '0')}, the CPU ${want.padStart(32, '0')}`)
-        }
+        if (inputs) {
+          for (let n = 0; n < 32; n++) {
+            const want = vregs[n] ?? inputs.sve.z[n]!.toString(16)
+            const got = BigInt(m.readRegister(Z0 + n)).toString(16)
+            if (got !== want) problems.push(`${text} (seed ${seed})${fpcrNote}: z${n} = ${got.padStart(vl! * 2, '0')}, the CPU ${want.padStart(vl! * 2, '0')}`)
+          }
+          for (let n = 0; n < 16; n++) {
+            const want = zp[n] ?? inputs.sve.p[n]!.toString(16)
+            const got = BigInt(m.readRegister(P0 + n)).toString(16)
+            if (got !== want) problems.push(`${text} (seed ${seed}): p${n} = ${got.padStart(vl! / 4, '0')}, the CPU ${want.padStart(vl! / 4, '0')}`)
+          }
+        } else
+          for (let n = 0; n < 32; n++) {
+            const want = vregs[n] ?? vs.v[n]!.toString(16)
+            const got = BigInt(m.readRegister(V0 + n)).toString(16)
+            if (got !== want) problems.push(`${text} (seed ${seed})${fpcrNote}: v${n} = ${got.padStart(32, '0')}, the CPU ${want.padStart(32, '0')}`)
+          }
         const gotFpsr = Number(m.readRegister(FPSR_ID))
-        if (gotFpsr !== fpsr) problems.push(`${text} (seed ${seed})${fpcrNote}: FPSR = ${gotFpsr.toString(16)}, the CPU ${fpsr.toString(16)}`)
+        if (gotFpsr !== sveFpsr) problems.push(`${text} (seed ${seed})${fpcrNote}: FPSR = ${gotFpsr.toString(16)}, the CPU ${sveFpsr.toString(16)}`)
         const changed = new Map(memory)
-        for (let b = 0; b < BUF_SIZE; b++) {
+        for (let b = 0; b < s.memory.length; b++) {
           const want = changed.get(b) ?? s.memory[b]!
           const got = m.readByte(SIM_BUF + b)
           if (got !== want) {

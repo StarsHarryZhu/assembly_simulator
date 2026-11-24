@@ -35,7 +35,7 @@ build until all of them are done.
 - `linux.ts` — the memory map, kernel state and the Linux system calls.
 - `libc.ts` — the built-in C library (printf, scanf, malloc, string functions, glibc's rand).
 - `fpformat.ts` — exact decimal and hex text of floats for printf, and correctly rounded reading for scanf.
-- `decoder.ts` — a word as named bit fields, text and notes.
+- `decoder.ts` — a word as named bit fields (with titles for the common field names), text and notes.
 - `calc.ts` — one line on its own for the instruction set tab, with demo inputs.
 - `format.ts` — the editor's Format command in the examples' layout.
 - `references.ts` — system calls, C library, condition codes, system registers, exceptions, directives.
@@ -55,6 +55,13 @@ point in half, single, double and BFloat16 with every FPCR mode (FZ, FZ16, DN, A
 flag, all of Neon with DotProd, I8MM, FHM, FCMA, RDM, BF16 and FP16, the AES, SHA-1/2/3/512, SM3 and SM4
 instructions, printf `%f %e %g %a` and scanf of floats done exactly as glibc does, and the float and simd
 examples; 22566 more encodings match LLVM and 8107 more cases match this Mac's CPU (SM3 and SM4, which it
-lacks, are checked against their standards' test vectors).
+lacks, are checked against their standards' test vectors). Phase 3: SVE, SVE2 and SVE2.1 — Z, P and FFR
+state at a vector length the toolbar picks (128 to 2048 bits, 256 by default; `ZCR_EL1` can shorten it),
+predication, first-fault and non-fault loads, gathers and scatters, predicate-as-counter, the B16B16
+BFloat16 forms, the SVE condition names, the register panel's SVE bank and the sve example. Every in-scope
+form LLVM knows decodes and assembles as it does (300k random words across the SVE space agree), 5555
+cases match this Mac's CPU in streaming mode at 512 bits, and what streaming mode forbids is checked by unit
+tests against the Neon equivalents or the architecture's description. FTMAD's coefficients are the
+architecture's constants; FEXPA's table is computed (2^(i/64) rounded) and equals the architecture's.
 
-Not done: phases 3–5 (SVE, SME, polish and release).
+Not done: phases 4–5 (SME, polish and release).

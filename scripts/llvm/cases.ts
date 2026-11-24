@@ -57,6 +57,8 @@ export const CLASSES: { name: string; mask: number; value: number }[] = [
   { name: 'ldst-v', mask: 0x0e000000, value: 0x0c000000 },
   // Scalar floating point, Advanced SIMD and the cryptographic extensions (op0 x111).
   { name: 'simd-fp', mask: 0x0e000000, value: 0x0e000000 },
+  // SVE, SVE2 and SVE2.1 (op0 0010).
+  { name: 'sve', mask: 0x1e000000, value: 0x04000000 },
 ]
 
 /** Random words in the implemented classes. */

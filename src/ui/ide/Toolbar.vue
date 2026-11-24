@@ -60,6 +60,7 @@ const st = computed(() => {
     running: s.mode === 'running',
     granularity: s.granularity,
     interval: s.interval,
+    settings: (s.isa.settings ?? []).map((o) => ({ spec: o, value: s.settings[o.id] ?? o.default })),
     part: part && part.parts > 1 && s.granularity === 'instruction' ? t(`伪指令第 ${part.part + 1}/${part.parts} 条`, `pseudo-instruction part ${part.part + 1}/${part.parts}`) : '',
   }
 })
@@ -70,6 +71,11 @@ function pickExample(e: Event) {
   const id = sel.value
   sel.value = ''
   if (id) emit('example', id)
+}
+
+function pickSetting(id: string, e: Event) {
+  const value = Number((e.target as HTMLSelectElement).value)
+  go(() => s.setSetting(id, value))
 }
 
 function toggleAuto() {
@@ -133,6 +139,12 @@ function toggleAuto() {
       <button class="chip" :aria-pressed="st.granularity === 'instruction'" :title="t('每步只执行一条真指令（和 MARS 一样），伪指令要分几步走完', 'Each step runs a single basic instruction (as MARS does), so a pseudo-instruction takes several steps')" @click="s.setGranularity('instruction')">
         {{ t('真指令', 'Basic instruction') }}
       </button>
+    </div>
+    <div v-for="o in st.settings" :key="o.spec.id" class="group setting">
+      <label class="small muted" :for="`tb-set-${o.spec.id}`" :title="tx(o.spec.note)">{{ tx(o.spec.title) }}</label>
+      <select :id="`tb-set-${o.spec.id}`" class="inp" :value="o.value" :title="tx(o.spec.note)" :disabled="st.busy" @change="pickSetting(o.spec.id, $event)">
+        <option v-for="opt in o.spec.options" :key="opt.value" :value="opt.value">{{ tx(opt.label) }}</option>
+      </select>
     </div>
     <div class="status">
       <span v-if="busy" class="spinner" :aria-label="t('处理中', 'Working')" />

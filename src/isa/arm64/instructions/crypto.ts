@@ -59,12 +59,12 @@ export const SBOXES = { aes: AES_SBOX, aesInv: AES_INV, sm4: SM4_SBOX }
 
 const bytesOf = (c: Cpu, n: number) => c.vread(n, 16)
 /** ShiftRows on the column-major state (byte i = row i % 4, column i / 4). */
-const shiftRows = (s: Uint8Array, inv: boolean) => Uint8Array.from({ length: 16 }, (_, i) => {
+export const shiftRows = (s: Uint8Array, inv: boolean) => Uint8Array.from({ length: 16 }, (_, i) => {
   const row = i & 3
   const col = i >> 2
   return s[(((col + (inv ? -row : row)) & 3) << 2) | row]!
 })
-function mixColumns(s: Uint8Array, inv: boolean): Uint8Array {
+export function mixColumns(s: Uint8Array, inv: boolean): Uint8Array {
   const out = new Uint8Array(16)
   const m = inv ? [14, 11, 13, 9] : [2, 3, 1, 1]
   for (let col = 0; col < 4; col++)
@@ -106,7 +106,7 @@ const putWords = (c: Cpu, n: number, w: number[]) =>
     w.map((v) => BigInt(v >>> 0)),
     2,
   )
-const rol = (x: number, n: number) => ((x << n) | (x >>> (32 - n))) >>> 0
+export const rol = (x: number, n: number) => ((x << n) | (x >>> (32 - n))) >>> 0
 const ror = (x: number, n: number) => rol(x, 32 - n)
 const add = (...v: number[]) => v.reduce((a, b) => (a + b) >>> 0, 0)
 const choose = (x: number, y: number, z: number) => ((x & y) | (~x & z)) >>> 0
@@ -385,7 +385,7 @@ const sm4T = (x: number) => {
   for (let i = 0; i < 4; i++) v |= SM4_SBOX[(x >>> (8 * i)) & 0xff]! << (8 * i)
   return v >>> 0
 }
-function sm4Rounds(state: number[], keys: number[], linear: (x: number) => number): number[] {
+export function sm4Rounds(state: number[], keys: number[], linear: (x: number) => number): number[] {
   const v = [...state]
   for (let i = 0; i < 4; i++) {
     const b = sm4T((v[3]! ^ v[2]! ^ v[1]! ^ keys[i]!) >>> 0)

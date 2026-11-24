@@ -19,8 +19,8 @@ guarded access to the browser's local storage for per-viewer preferences.
 
 - `theme.css` — light and dark colour tokens, fonts, and the shared button, input, chip, card styles.
 - `i18n.ts` — the saved language (`lang`), `t(zh, en)` and `tx(text)` for components.
-- `storage.ts` — `load` and `save` of preferences in localStorage, prefixed `asmsim.`; `isaKey` scopes a
-  key to one ISA (MIPS keeps the unscoped names it always had).
+- `storage.ts` — `load` and `save` of preferences in localStorage, prefixed `asmsim.`; `loadSettings` reads
+  an ISA's machine settings; `isaKey` scopes a key to one ISA (MIPS keeps the unscoped names it always had).
 - `ide` — the Edit & run tab.
 - `calc` — the instruction set tab and the disassembler.
 

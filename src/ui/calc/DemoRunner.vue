@@ -9,13 +9,36 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { bigOfBytes, binGroupsOf, floatFromBits, hex8, hexAddr, hexBits, javaFloat, signedText } from '../../core/format'
 import type { Environment, HaltReason, IsaPlugin, LineAnalysis, Machine, RegisterSpec, RegValue, StepInfo } from '../../core/isa'
 import { parseValue } from './values'
+import { loadSettings } from '../storage'
 
 const props = defineProps<{ isa: IsaPlugin; analysis: LineAnalysis }>()
 const isa = props.isa
 const specs = new Map<number, RegisterSpec>()
 for (const b of isa.registers) for (const r of b.registers) specs.set(r.id, r)
 const nameOf = (id: number) => specs.get(id)?.name ?? `#${id}`
-const bitsOf = (id: number) => specs.get(id)?.bits ?? 32
+/** The settings chosen under Edit & run (the SVE vector length), so the demo runs the same machine. */
+const settings = loadSettings(isa)
+function makeEnv(print: (text: string) => void): Environment {
+  return {
+    print,
+    readLine: () => null,
+    readChar: () => null,
+    dialog: () => null,
+    files: { read: () => null, write: () => {}, list: () => [] },
+    now: () => Date.now(),
+  }
+}
+/** Widths of the registers that follow a setting (SVE Z and P registers), read from a machine built with it. */
+const liveBits = computed(() => {
+  const out = new Map<number, number>()
+  const p = props.analysis.program
+  if (!p) return out
+  const m = isa.createMachine(p, makeEnv(() => {}), { settings })
+  if (m.readRegisterBytes)
+    for (const [id, s] of specs) if (s.kind === 'vector' || s.kind === 'predicate') out.set(id, m.readRegisterBytes(id).length * 8)
+  return out
+})
+const bitsOf = (id: number) => liveBits.value.get(id) ?? specs.get(id)?.bits ?? 32
 const addrBits = isa.layout.addressBits ?? 32
 const hexA = (a: number) => hexAddr(a, addrBits)
 /** Addresses compared as numbers: unsigned 32-bit in a 32-bit address space, as they are in a 64-bit one. */
@@ -32,6 +55,29 @@ function regValue(m: Machine, id: number): RegValue {
   }
   return m.readRegister(id)
 }
+
+/** The narrower register inside each wider one (v1 inside z1), keyed by the wider one. */
+const narrowOf = new Map<number, number>()
+for (const [id, s] of specs) if (s.partOf != null) narrowOf.set(s.partOf, id)
+/**
+ * The registers to leave out of a list that has both names of one storage (v1 and z1): the wider name when
+ * the line does not use it, otherwise the narrower one.
+ */
+function hiddenNames(ids: Iterable<number>): Set<number> {
+  const set = new Set(ids)
+  const text = props.analysis.instructions.map((i) => i.basic).join('\n')
+  const hidden = new Set<number>()
+  for (const [wide, narrow] of narrowOf) {
+    if (!set.has(wide) || !set.has(narrow)) continue
+    hidden.add(new RegExp(`\\b${nameOf(wide)}\\b`, 'i').test(text) ? narrow : wide)
+  }
+  return hidden
+}
+/** The demo's start values, one per storage. */
+const inputs = computed(() => {
+  const hidden = hiddenNames(props.analysis.inputs.map((i) => i.id))
+  return props.analysis.inputs.filter((i) => !hidden.has(i.id))
+})
 
 const texts = reactive(new Map<number, string>())
 const cursor = ref(0)
@@ -79,25 +125,21 @@ const trace = computed(() => {
   const a = props.analysis
   if (!a.program || !a.instructions.length) return null
   let output = ''
-  const env: Environment = {
-    print: (t) => {
+  const m = isa.createMachine(
+    a.program,
+    makeEnv((t) => {
       output += t
-    },
-    readLine: () => null,
-    readChar: () => null,
-    dialog: () => null,
-    files: { read: () => null, write: () => {}, list: () => [] },
-    now: () => Date.now(),
-  }
-  const m = isa.createMachine(a.program, env)
-  for (const inp of a.inputs) m.setRegister(inp.id, valueOf(inp.id, inp.value))
+    }),
+    { settings },
+  )
+  for (const inp of inputs.value) m.setRegister(inp.id, valueOf(inp.id, inp.value))
   const first = a.instructions[0]!.addr
   const end = first + 4 * a.instructions.length
   // The ZA array of SME is too large to copy after every step and has no place in this list.
   const all = () => Array.from({ length: isa.registerCount }, (_, id) => (specs.get(id)?.kind === 'matrix' ? 0 : regValue(m, id)))
   const regs = [all()]
   const steps: Step[] = []
-  const ids = new Set<number>(a.inputs.map((i) => i.id))
+  const ids = new Set<number>(inputs.value.map((i) => i.id))
   let note = ''
   for (let i = 0; i < a.instructions.length * 2 + 2; i++) {
     const pc = m.programCounter
@@ -136,7 +178,9 @@ const trace = computed(() => {
   if (isa.zeroRegister != null) ids.delete(isa.zeroRegister)
   ids.delete(isa.pcRegister)
   for (const id of ids) if (specs.get(id)?.kind === 'matrix') ids.delete(id)
-  return { steps, regs, ids: [...ids].sort((x, y) => x - y), note, first, end, output }
+  const hidden = hiddenNames(ids)
+  for (const id of hidden) ids.delete(id)
+  return { steps, regs, ids: [...ids].sort((x, y) => x - y), hidden, note, first, end, output }
 })
 
 const labelAt = computed(() => new Map(props.analysis.labels.map((l) => [u(l.addr), l.name])))
@@ -210,7 +254,8 @@ function commit(id: number, text: string) {
 onBeforeUnmount(stop)
 
 function summary(s: Step): string {
-  const parts = s.info.writes.map((w) => `${nameOf(w.id)} ← ${specs.get(w.id)?.kind === 'flag' ? Number(w.after) & 1 : hexBits(w.after, bitsOf(w.id))}`)
+  const hidden = trace.value?.hidden
+  const parts = s.info.writes.filter((w) => !hidden?.has(w.id)).map((w) => `${nameOf(w.id)} ← ${specs.get(w.id)?.kind === 'flag' ? Number(w.after) & 1 : hexBits(w.after, bitsOf(w.id))}`)
   for (const m of s.mem) parts.push(`[${hexA(m.addr)}] ← ${hex8(m.after)}`)
   return parts.join(t('，', ', ')) || t('没有改寄存器', 'no register changed')
 }
@@ -227,9 +272,9 @@ function summary(s: Step): string {
       }}</span>
     </div>
 
-    <div v-if="analysis.inputs.length" class="init">
+    <div v-if="inputs.length" class="init">
       <span class="small muted">{{ t('初值', 'Start values') }}</span>
-      <label v-for="inp in analysis.inputs" :key="inp.id" class="iv">
+      <label v-for="inp in inputs" :key="inp.id" class="iv">
         <span class="mono small">{{ nameOf(inp.id) }}</span>
         <input
           class="inp"

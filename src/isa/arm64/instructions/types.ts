@@ -59,6 +59,8 @@ export interface Cpu {
   branchTo(target: bigint): void
 
   load(addr: bigint, size: number, acc?: number): bigint
+  /** A load that reports a fault as null instead of taking it (SVE's first-fault and non-fault loads). */
+  tryLoad(addr: bigint, size: number): bigint | null
   store(addr: bigint, size: number, value: bigint, acc?: number): void
 
   /** Raise an undefined instruction exception; `why` explains it when the encoding exists but this use does not. */
@@ -89,6 +91,12 @@ export interface Cpu {
    * (FEAT_AFP), the rest comes from register `merge` instead.
    */
   vset(n: number, bytes: number, v: bigint, merge?: number): void
+  /** The SVE vector length in bytes (VL / 8): a Z register's size; vread(n, vl) and vwrite read and write one. */
+  readonly vl: number
+  /** Predicate register n (0–15, 16 for FFR) as one 0/1 byte per vector byte (vl entries). */
+  pread(n: number): Uint8Array
+  /** Write predicate n (16 for FFR) from one 0/1 byte per vector byte. */
+  pwrite(n: number, bits: Uint8Array): void
   /** A floating-point environment holding FPCR, for one instruction's soft-float calls. */
   fpEnv(): FpEnv
   /** FPCR without marking it read (for instructions that only look at a control bit). */

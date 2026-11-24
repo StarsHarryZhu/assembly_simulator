@@ -9,7 +9,7 @@
  * table when it has a .ktext section, and otherwise stop the program the way Linux would send a signal.
  */
 import { L } from '../../core/i18n'
-import type { Environment, HaltReason, InputRequest, Machine, MachineState, Program, RegChange, RegStatus, RegValue, StepInfo } from '../../core/isa'
+import type { Environment, HaltReason, InputRequest, Machine, MachineOptions, MachineState, Program, RegChange, RegStatus, RegValue, StepInfo } from '../../core/isa'
 import { IDLE, READ, WRITTEN } from '../../core/isa'
 import { addrOf, hex16, vaOf } from '../../core/format'
 import { WideMemory } from '../../core/memory'
@@ -43,6 +43,7 @@ import {
   ELR_EL1,
   ESR_EL1,
   FAR_EL1,
+  FFR,
   FLAG_C,
   FLAG_N,
   FLAG_V,
@@ -50,6 +51,7 @@ import {
   FPCR_ID,
   FPSR_ID,
   NZCV_SYS,
+  P0,
   PC,
   REGISTER_COUNT,
   SP,
@@ -61,6 +63,8 @@ import {
   SYSREG_BY_NAME,
   V0,
   VBAR_EL1,
+  Z0,
+  ZCR_EL1,
 } from './registers'
 
 loadTables()
@@ -170,6 +174,10 @@ class StepLog {
 const SYS_OFFSET = 140
 /** Bytes per SIMD&FP register in storage (2048-bit SVE vectors). */
 const VMAX = 256
+/** Bytes per predicate register in storage (one bit per vector byte). */
+const PMAX = VMAX / 8
+/** The SVE vector length when the settings do not choose one, in bits. */
+export const DEFAULT_VL = 256
 /** FPSR.QC, the cumulative saturation bit. */
 const QC = 1 << 27
 
@@ -188,7 +196,12 @@ export class ArmMachine implements Machine, Cpu, Host {
   private sys: bigint[] = []
   /** SIMD&FP registers, VMAX bytes each (room for the longest SVE vector); the low `vlen` bytes are live. */
   private vr = new Uint8Array(32 * VMAX)
-  private vlen = 16
+  /** p0–p15 and FFR (index 16), packed: bit i of a predicate governs vector byte i. */
+  private pr = new Uint8Array(17 * PMAX)
+  /** The largest vector length the settings allow, in bytes. */
+  private maxVl = DEFAULT_VL / 8
+  /** The current vector length in bytes: maxVl, or less when ZCR_EL1.LEN asks for less. */
+  private vlen = DEFAULT_VL / 8
   private fpcrv = 0
   private fpsrv = 0
   private mem = new WideMemory()
@@ -229,9 +242,12 @@ export class ArmMachine implements Machine, Cpu, Host {
   private waitStdinLen: number | null = null
   private monitor: { addr: number; size: number } | null = null
 
-  constructor(program: Program, env: Environment) {
+  constructor(program: Program, env: Environment, options?: MachineOptions) {
     this.program = program
     this.env = env
+    const bits = options?.settings?.vl ?? DEFAULT_VL
+    this.maxVl = Math.max(16, Math.min(VMAX, 2 ** Math.floor(Math.log2(bits / 8))))
+    this.vlen = this.maxVl
     const ins = program.instructions
     this.textStart = ins.find((i) => i.addr < TOP)?.addr ?? TEXT_BASE
     if (this.textStart > TEXT_BASE) this.textStart = TEXT_BASE
@@ -263,6 +279,9 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.daif = 0
     this.sys = new Array(REGISTER_COUNT - SYS_OFFSET).fill(0n)
     this.vr.fill(0)
+    this.pr.fill(0)
+    this.vlen = this.maxVl
+    this.sys[ZCR_EL1 - SYS_OFFSET] = 15n
     this.fpcrv = 0
     this.fpsrv = 0
     this.sp1 = vaOf(KSTACK_TOP)
@@ -508,11 +527,15 @@ export class ArmMachine implements Machine, Cpu, Host {
       if (seen.has(id)) continue
       seen.add(id)
       writes.push({ id, before: log.regOld[i]!, after: this.rawReg(id) })
+      // z<n> is the same register as v<n>: report it under both names.
+      if (id >= V0 && id < V0 + 32) writes.push({ id: id - V0 + Z0, before: log.regOld[i]!, after: this.rawReg(id) })
     }
+    const reads = new Set(log.reads)
+    for (const id of log.reads) if (id >= V0 && id < V0 + 32) reads.add(id - V0 + Z0)
     return {
       pc: log.pc,
       nextPc: this.pcReg,
-      reads: [...new Set(log.reads)],
+      reads: [...reads],
       writes,
       memory: log.memAddr.map((addr, i) => ({ addr, size: log.memSize[i]! })),
       output: log.output,
@@ -563,11 +586,14 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   readRegisterBytes(id: number): Uint8Array {
-    if (id >= V0 && id < V0 + 32) return this.vr.slice((id - V0) * VMAX, (id - V0) * VMAX + this.vlen)
+    if (id >= V0 && id < V0 + 32) return this.vr.slice((id - V0) * VMAX, (id - V0) * VMAX + 16)
+    if (id >= Z0 && id < Z0 + 32) return this.vr.slice((id - Z0) * VMAX, (id - Z0) * VMAX + this.vlen)
+    if (id >= P0 && id <= FFR) return this.pr.slice((id - P0) * PMAX, (id - P0) * PMAX + this.vlen / 8)
     return new Uint8Array(0)
   }
 
   registerStatus(id: number): RegStatus {
+    if (id >= Z0 && id < Z0 + 32) return this.status[id - Z0 + V0] as RegStatus
     return this.status[id] as RegStatus
   }
 
@@ -607,6 +633,8 @@ export class ArmMachine implements Machine, Cpu, Host {
   private rawReg(id: number): RegValue {
     if (id < 31) return this.xr[id]!
     if (id >= V0 && id < V0 + 32) return this.vbig(id - V0, this.vlen)
+    if (id >= Z0 && id < Z0 + 32) return this.vbig(id - Z0, this.vlen)
+    if (id >= P0 && id <= FFR) return this.pbig(id - P0)
     if (id === SP) return this.elv && this.spsel ? this.sp1 : this.sp0
     if (id === PC) return vaOf(this.pcReg)
     if (id <= FLAG_V) return (this.nzcv >> (FLAG_V - id)) & 1
@@ -617,6 +645,8 @@ export class ArmMachine implements Machine, Cpu, Host {
   private setRawReg(id: number, v: RegValue): void {
     if (id < 31) this.xr[id] = BigInt(v)
     else if (id >= V0 && id < V0 + 32) this.vstore(id - V0, this.vlen, BigInt(v))
+    else if (id >= Z0 && id < Z0 + 32) this.vstore(id - Z0, this.vlen, BigInt(v))
+    else if (id >= P0 && id <= FFR) this.pstore(id - P0, BigInt(v))
     else if (id === SP) {
       if (this.elv && this.spsel) this.sp1 = BigInt.asUintN(64, BigInt(v))
       else this.sp0 = BigInt.asUintN(64, BigInt(v))
@@ -677,6 +707,13 @@ export class ArmMachine implements Machine, Cpu, Host {
       case FPSR_ID:
         this.fpsrv = Number(v & BigInt(QC | 0x9f))
         return
+      case ZCR_EL1: {
+        // The vector length becomes the largest power of two up to (LEN + 1) × 128 bits that the machine has.
+        const len = Number(v & 15n)
+        this.sys[id - SYS_OFFSET] = BigInt(len)
+        this.vlen = Math.min(this.maxVl, 2 ** Math.floor(Math.log2(len + 1)) * 16)
+        return
+      }
     }
     this.sys[id - SYS_OFFSET] = v
   }
@@ -720,7 +757,39 @@ export class ArmMachine implements Machine, Cpu, Host {
     }
   }
 
+  /** Predicate n (16 = FFR) as a number: bit i governs vector byte i. */
+  private pbig(n: number): bigint {
+    const base = n * PMAX
+    let v = 0n
+    for (let i = this.vlen / 8 - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.pr[base + i]!)
+    return v
+  }
+  private pstore(n: number, v: bigint): void {
+    const base = n * PMAX
+    for (let i = 0; i < this.vlen / 8; i++) {
+      this.pr[base + i] = Number(v & 0xffn)
+      v >>= 8n
+    }
+  }
+
   /* ---------------------------------------------------------------- Cpu: SIMD&FP */
+
+  get vl(): number {
+    return this.vlen
+  }
+  pread(n: number): Uint8Array {
+    this.markRead(P0 + n)
+    const out = new Uint8Array(this.vlen)
+    const base = n * PMAX
+    for (let i = 0; i < this.vlen; i++) out[i] = (this.pr[base + (i >> 3)]! >> (i & 7)) & 1
+    return out
+  }
+  pwrite(n: number, bits: Uint8Array): void {
+    this.markWrite(P0 + n, this.pbig(n))
+    const base = n * PMAX
+    this.pr.fill(0, base, base + this.vlen / 8)
+    for (let i = 0; i < this.vlen; i++) if (bits[i]) this.pr[base + (i >> 3)]! |= 1 << (i & 7)
+  }
 
   vread(n: number, bytes: number): Uint8Array {
     this.markRead(V0 + n)
@@ -740,7 +809,7 @@ export class ArmMachine implements Machine, Cpu, Host {
   vset(n: number, bytes: number, v: bigint, merge?: number): void {
     const id = V0 + n
     // FEAT_AFP's FPCR.NEP: a scalar result keeps the other bytes of the source register `merge`.
-    const keep = merge !== undefined && this.fpcrv & NEP ? this.vbig(merge, this.vlen) : 0n
+    const keep = merge !== undefined && this.fpcrv & NEP ? this.vbig(merge, 16) : 0n
     if (merge !== undefined && this.fpcrv & NEP && merge !== n) this.markRead(V0 + merge)
     this.markWrite(id, this.vbig(n, this.vlen))
     const mask = (1n << BigInt(bytes * 8)) - 1n
@@ -957,6 +1026,15 @@ export class ArmMachine implements Machine, Cpu, Host {
     return this.rawLoad(this.check(addr, size, false, acc), size)
   }
 
+  tryLoad(addr: bigint, size: number): bigint | null {
+    try {
+      return this.load(addr, size)
+    } catch (e) {
+      if (e instanceof ArmFault) return null
+      throw e
+    }
+  }
+
   store(addr: bigint, size: number, value: bigint, acc = 0): void {
     const a = this.check(addr, size, true, acc)
     const log = this.log
@@ -1104,6 +1182,6 @@ export class ArmMachine implements Machine, Cpu, Host {
 
 export { SYSREG_BY_NAME }
 
-export function createMachine(program: Program, env: Environment): ArmMachine {
-  return new ArmMachine(program, env)
+export function createMachine(program: Program, env: Environment, options?: MachineOptions): ArmMachine {
+  return new ArmMachine(program, env, options)
 }

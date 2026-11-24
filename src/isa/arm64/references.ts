@@ -141,6 +141,21 @@ export const CONDITIONS: ReferenceTable = {
         cond('nv', T('总是（保留的写法）', 'always (reserved spelling)'), '—', T('在 A64 里和 al 一样', 'the same as al in A64')),
       ],
     },
+    {
+      title: T('SVE 的写法（谓词测试之后）', 'SVE names (after a predicate test)'),
+      rows: [
+        cond('none', T('没有活跃元素为真（同 eq）', 'no active element true (as eq)'), 'Z = 1', T('结果谓词全假', 'the result predicate is all false')),
+        cond('any', T('有活跃元素为真（同 ne）', 'some active element true (as ne)'), 'Z = 0', T('至少一个为真', 'at least one is true')),
+        cond('first', T('第一个活跃元素为真（同 mi）', 'the first active element true (as mi)'), 'N = 1', T('whilelo 之后：还有元素要处理', 'after whilelo: elements are left to process')),
+        cond('nfrst', T('第一个活跃元素为假（同 pl）', 'the first active element false (as pl)'), 'N = 0', T('第一个为假', 'the first is false')),
+        cond('last', T('最后一个活跃元素为真（同 lo）', 'the last active element true (as lo)'), 'C = 0', T('最后一个为真', 'the last is true')),
+        cond('nlast', T('最后一个活跃元素为假（同 hs）', 'the last active element false (as hs)'), 'C = 1', T('最后一个为假', 'the last is false')),
+        cond('pmore', T('还有，且最后一个为假（同 hi）', 'more remain, the last false (as hi)'), 'C = 1 且 Z = 0', T('有为真的元素，最后一个为假', 'some true, the last false')),
+        cond('plast', T('没有了，或最后一个为真（同 ls）', 'none, or the last true (as ls)'), 'C = 0 或 Z = 1', T('全假，或最后一个为真', 'all false, or the last true')),
+        cond('tcont', T('继续：没找到终止条件（同 ge）', 'continue: no termination found (as ge)'), 'N = V', T('cterm 之后：循环继续', 'after cterm: the loop continues')),
+        cond('tstop', T('停止：找到终止条件（同 lt）', 'stop: termination found (as lt)'), 'N ≠ V', T('cterm 之后：循环结束', 'after cterm: the loop ends')),
+      ],
+    },
   ],
 }
 

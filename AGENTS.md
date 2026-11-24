@@ -94,6 +94,9 @@ Encodings match LLVM both ways; 3240 single-instruction cases match this Mac's C
 instructions per second. Phase 2 is done: scalar floating point (half, single, double, BFloat16, every
 FPCR mode and FPSR flag), all of Neon with its dot product, matrix, complex and BF16 extensions, the
 crypto extensions, printf and scanf of floats, and the float and simd examples; 8107 more cases match
-the CPU. Next: phase 3 (SVE, SVE2, SVE2.1), then SME.
+the CPU. Phase 3 is done: SVE, SVE2 and SVE2.1 with a vector length chosen in the toolbar (128 to 2048
+bits), predication, first-fault loads, gathers and scatters, predicate-as-counter, the register panel's
+SVE bank and the sve example; 26741 encodings match LLVM, 5555 cases match the CPU in streaming mode at
+512 bits, and unit tests cover what streaming mode forbids. Next: phase 4 (SME, SME2, SME2.1).
 
 Goals: the AArch64 plugin above, then x86-64, behind the same `IsaPlugin` interface.

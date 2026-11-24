@@ -3,13 +3,13 @@ import { T, type Text } from '../../core/i18n'
 import type { CatalogEntry, Environment, ExampleProgram, IsaPlugin, LabelKind, Program, SourceFile } from '../../core/isa'
 import { assemble, DIRECTIVES, KTEXT_BASE, KSTACK_TOP, TEXT_BASE } from './assembler'
 import { analyzeLine, buildLine } from './calc'
-import { createMachine, INITIAL_SP } from './cpu'
+import { createMachine, DEFAULT_VL, INITIAL_SP } from './cpu'
 import { decodeView } from './decoder'
 import { allForms, mnemonicList, operandsOf, sampleLine } from './encoding/table'
 import { formatSource } from './format'
 import { loadTables } from './instructions/index'
 import { HEAP_BASE, HEAP_LIMIT, MALLOC_BASE, MALLOC_LIMIT, MMAP_BASE, MMAP_LIMIT, STACK_SIZE, STACK_TOP, STUB_BASE, STUB_END } from './linux'
-import { FP_REG, GPR_WORDS, parseGpr, PC, REGISTER_BANKS, REGISTER_COUNT, SP, SYSREGS } from './registers'
+import { FP_REG, GPR_WORDS, parseGpr, parseSveReg, parseVreg, PC, REGISTER_BANKS, REGISTER_COUNT, SP, SVE_WORDS, SYSREGS, VREG_WORDS } from './registers'
 import { REFERENCES } from './references'
 
 loadTables()
@@ -30,6 +30,12 @@ export const GROUP_TITLES: Record<string, Text> = {
   simdfp: T('向量浮点（Neon）', 'Vector floating point (Neon)'),
   crypto: T('加密扩展', 'Cryptographic extensions'),
   vload: T('浮点和向量加载存储', 'FP and vector loads and stores'),
+  sve: T('SVE 整数', 'SVE integer'),
+  svepred: T('SVE 谓词', 'SVE predicates'),
+  sveperm: T('SVE 置换', 'SVE permutes'),
+  svefp: T('SVE 浮点', 'SVE floating point'),
+  sveload: T('SVE 加载存储', 'SVE loads and stores'),
+  sve2: T('SVE2 和 SVE2.1', 'SVE2 and SVE2.1'),
 }
 
 export const CATALOG: CatalogEntry[] = allForms().map((form) => ({
@@ -59,7 +65,7 @@ for (const form of allForms()) {
  * Example programs, in menu order. examples/<id>.s has Chinese comments, examples/en/<id>.s the same code
  * with English comments. Each file starts with "// <title>".
  */
-const EXAMPLE_ORDER = ['welcome', 'hello', 'hello-printf', 'factorial', 'input', 'heap', 'float', 'simd', 'exceptions']
+const EXAMPLE_ORDER = ['welcome', 'hello', 'hello-printf', 'factorial', 'input', 'heap', 'float', 'simd', 'sve', 'exceptions']
 const zhFiles = import.meta.glob('./examples/*.s', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const enFiles = import.meta.glob('./examples/en/*.s', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const idOf = (path: string) => path.replace(/^.*\/|\.s$/g, '')
@@ -105,7 +111,7 @@ export const arm64: IsaPlugin = {
   },
   language: {
     mnemonics: mnemonicList(),
-    registers: [...GPR_WORDS, ...SYSREGS.map((r) => r.name.toLowerCase())],
+    registers: [...GPR_WORDS, ...VREG_WORDS, ...SVE_WORDS, ...SYSREGS.map((r) => r.name.toLowerCase())],
     directives: DIRECTIVES,
     sections: ['.text', '.data', '.bss', '.rodata', '.section'],
     dataSections: ['.data', '.bss', '.rodata'],
@@ -114,7 +120,7 @@ export const arm64: IsaPlugin = {
     lineStartComment: '#',
     blockComment: ['/*', '*/'],
     statementSeparator: ';',
-    isRegister: (word) => parseGpr(word) !== null,
+    isRegister: (word) => parseGpr(word) !== null || parseVreg(word) !== null || parseSveReg(word) !== null || word.toLowerCase() === 'ffr',
     fileExtension: '.s',
     dataDirectives: { dword: '.quad', word: '.word', half: '.hword', byte: '.byte', ascii: '.ascii', asciiz: '.asciz', space: '.skip', float: '.float', double: '.double' },
   },
@@ -140,7 +146,16 @@ export const arm64: IsaPlugin = {
   },
   zeroRegister: undefined,
   assemble: (source: SourceFile, options) => assemble(source, options),
-  createMachine: (program: Program, env: Environment) => createMachine(program, env),
+  settings: [
+    {
+      id: 'vl',
+      title: T('SVE 向量长度', 'SVE vector length'),
+      note: T('z 寄存器有多少位（VL）。程序不该依赖它：同一个程序在不同长度下都应该算出同样的结果。', 'How many bits a z register has (VL). Programs should not depend on it: the same program should compute the same result at every length.'),
+      options: [128, 256, 512, 1024, 2048].map((v) => ({ value: v, label: T(`${v} 位`, `${v} bits`) })),
+      default: DEFAULT_VL,
+    },
+  ],
+  createMachine: (program: Program, env: Environment, options) => createMachine(program, env, options),
   decode: (word: number, addr: number) => decodeView(word, addr),
   analyzeLine: (line, options) => analyzeLine(line, CATALOG, options),
   buildLine,

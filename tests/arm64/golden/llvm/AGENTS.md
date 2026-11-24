@@ -28,12 +28,19 @@ random words; for handwritten lines, the words clang assembles; for whole progra
 - `simdfp.json` — Neon floating point.
 - `vload.json` — loads and stores of SIMD&FP registers and structures.
 - `crypto.json` — the cryptographic extensions.
+- `sve.json` — SVE integer arithmetic, logic, shifts, counts and immediates.
+- `sve2.json` — SVE2 and SVE2.1 integer, and SVE2's floating-point additions.
+- `sveperm.json` — SVE permutes.
+- `svepred.json` — predicates, compares, WHILE, the FFR and predicate-as-counter.
+- `svefp.json` — SVE floating point and BFloat16.
+- `sveload.json` — SVE loads, stores, gathers, scatters and prefetches.
 - `class-dp-imm.json` — random words across data processing (immediate).
 - `class-dp-reg.json` — random words across data processing (register).
 - `class-branch-sys.json` — random words across branches and system instructions.
 - `class-ldst.json` — random words across integer loads and stores.
 - `class-ldst-v.json` — random words across SIMD&FP loads and stores.
 - `class-simd-fp.json` — random words across scalar FP, Advanced SIMD and crypto.
+- `class-sve.json` — random words across the SVE space.
 - `sysops.json` — every SYS word in the DC, IC, AT and TLBI spaces.
 - `asm-base.json` — clang's words for `scripts/llvm/asm/base.s`.
 - `prog-data.json` — section bytes of `scripts/llvm/programs/data.s`.
@@ -43,4 +50,5 @@ random words; for handwritten lines, the words clang assembles; for whole progra
 ## 4. Progress
 
 Done: fixtures for the A64 base and for floating point, Neon and crypto (22566 encodings plus 6000
-class-wide random words). Not done: SVE and SME.
+class-wide random words); SVE, SVE2 and SVE2.1 (26741 encodings plus 3000 class-wide words). Not
+done: SME.

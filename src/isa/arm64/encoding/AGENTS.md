@@ -20,11 +20,12 @@ templates and the table that turns lines into words and words into text, in both
 - `syntax.ts` — operand templates: compile, match, print, sample, rebuild from operand texts.
 - `operands.ts` — every operand type (registers, immediates, labels, shifts, extends, system names).
 - `simd.ts` — SIMD&FP operand types: scalar and vector registers, elements, lists, lanes, FP and modified immediates.
+- `sve.ts` — SVE operand types: Z and P registers with element sizes, lists and pairs, predicate-as-counter, indexed elements, patterns, shift and logical immediates.
 - `table.ts` — the instruction and alias table: define, encode a line, decode a word, pick the alias to show.
 
 ## 4. Progress
 
 Done: everything the A64 base needs, including the full DC, IC, AT and TLBI name tables (with the nXS
 and range forms). Phase 2: vector arrangements, elements and lanes, register lists, structure
-loads' post-index forms, floating-point and modified immediates (`simd.ts`). Not done: predicate and ZA
-operand types for phases 3–4.
+loads' post-index forms, floating-point and modified immediates (`simd.ts`). Phase 3: the SVE operand
+types (`sve.ts`) and SVE's condition names (`b.first`, `b.none`…). Not done: ZA operand types for phase 4.

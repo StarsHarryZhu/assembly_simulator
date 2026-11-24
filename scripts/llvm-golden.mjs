@@ -51,18 +51,33 @@ function disassemble(words) {
   return words.map((w, i) => [`0x${w.toString(16).padStart(8, '0')}`, i * 4, texts.has(i * 4) ? texts.get(i * 4) : null])
 }
 
+/**
+ * A MOVPRFX must be followed by a destructive instruction on the same register, or clang reports the next
+ * line: give each MOVPRFX one of its own (only the first word of each section is read).
+ */
+function follower(line) {
+  const m = /^movprfx\s+z(\d+)(\.[bhsd])?\s*,\s*(?:(p\d+)\/[mz]\s*,\s*)?z\d+/i.exec(line)
+  if (!m) return ''
+  const t = m[2] ?? '.d'
+  const d = Number(m[1])
+  return `\nadd z${d}${t}, ${m[3] ?? 'p0'}/m, z${d}${t}, z${(d + 1) % 32}${t}`
+}
+
 /** Assemble lines one per instruction; returns the word for each (null where clang refuses it). */
 function assemble(lines) {
   const src = join(tmp, 'a.s')
   const obj = join(tmp, 'a.o')
   // Every line goes in its own numbered section so an error in one leaves the others' places alone.
-  writeFileSync(src, lines.map((l, i) => `.section .t${i},"ax"\n${l}`).join('\n') + '\n')
+  writeFileSync(src, lines.map((l, i) => `.section .t${i},"ax"\n${l}${follower(l)}`).join('\n') + '\n')
   const r = spawnSync(CLANG, ['-c', ...TARGET, src, '-o', obj], { encoding: 'utf8' })
   const bad = new Set()
-  for (const m of r.stderr.matchAll(/a\.s:(\d+):\d+: error/g)) bad.add(Math.floor((Number(m[1]) - 1) / 2))
+  // Line numbers in the file back to input lines (a MOVPRFX's follower takes a line of its own).
+  const lineOf = []
+  lines.forEach((l, i) => lineOf.push(i, i, ...(follower(l) ? [i] : [])))
+  for (const m of r.stderr.matchAll(/a\.s:(\d+):\d+: error/g)) bad.add(lineOf[Number(m[1]) - 1])
   if (bad.size) {
     const good = lines.map((l, i) => (bad.has(i) ? '' : l))
-    writeFileSync(src, good.map((l, i) => `.section .t${i},"ax"\n${l}`).join('\n') + '\n')
+    writeFileSync(src, good.map((l, i) => `.section .t${i},"ax"\n${l}${follower(l)}`).join('\n') + '\n')
     execFileSync(CLANG, ['-c', ...TARGET, src, '-o', obj])
   } else if (r.status !== 0) throw new Error(r.stderr)
   const out = execFileSync(OBJDUMP, ['-s', obj], { maxBuffer: 1 << 28 }).toString()

@@ -157,9 +157,12 @@ export function unpack(env: FpEnv, fmt: Fmt, bits: bigint, fpexc = true, ahp = f
   return { t: NUM, s, m: fr | (1n << B(f)), x: ex - bias - f, d: false }
 }
 
-/** FPProcessDenorm(s): with AH = 1, a kept denormal input of single or double precision sets IDC. */
-function denorms(env: FpEnv, fmt: Fmt, ...vals: Val[]): void {
-  if (env.altfp && fmt.n !== 16 && vals.some((v) => v.d)) env.flags |= IDC
+/**
+ * FPProcessDenorm(s): with AH = 1, a kept denormal input sets IDC, except in half precision (BFloat16, the top
+ * half of a single, counts as single).
+ */
+export function denorms(env: FpEnv, fmt: Fmt, ...vals: Val[]): void {
+  if (env.altfp && fmt !== F16 && vals.some((v) => v.d)) env.flags |= IDC
 }
 
 /* ------------------------------------------------------------------ rounding */
@@ -506,6 +509,52 @@ export function fpMulAdd(env: FpEnv, fmt: Fmt, addend: bigint, op1: bigint, op2:
   }
   if (!invalid && fpexc) denorms(env, fmt, A, a, b)
   return r!
+}
+
+/** FSCALE: op × 2^n, rounded once. */
+export function fpScale(env: FpEnv, fmt: Fmt, op: bigint, n: number): bigint {
+  const v = unpack(env, fmt, op)
+  if (v.t === QNAN || v.t === SNAN) return processNaN(env, fmt, v.t, op)
+  denorms(env, fmt, v)
+  if (v.t === ZERO) return zeroOf(fmt, v.s)
+  if (v.t === INF) return infOf(fmt, v.s)
+  return round(env, fmt, v.s, v.m, v.x + Math.max(-5000, Math.min(5000, n)))
+}
+
+/** A NaN of format `from` as a NaN of format `to` (FPConvertNaN: sign and the top payload bits kept). */
+function widenNaN(from: Fmt, to: Fmt, bits: bigint): bigint {
+  const s = (bits >> B(from.n - 1)) & 1n
+  const frac = bits & ones(from.f)
+  return (s << B(to.n - 1)) | (ones(to.e) << B(to.f)) | (frac << B(to.f - from.f))
+}
+
+/**
+ * FPDot: op1a × op2a + op1b × op2b with a single rounding; the four factors are 16-bit (`src`), the result
+ * single precision. NaNs first: signalling before quiet, in operand order (FPProcessNaNs4).
+ */
+export function fpDot(env: FpEnv, src: Fmt, op1a: bigint, op1b: bigint, op2a: bigint, op2b: bigint, fpexc = true): bigint {
+  const f = [op1a, op1b, op2a, op2b]
+  const v = f.map((x) => unpack(env, src, x, fpexc))
+  for (const t of [SNAN, QNAN]) {
+    const i = v.findIndex((x) => x.t === t)
+    if (i >= 0) return processNaN(env, F32, t, widenNaN(src, F32, f[i]!), fpexc)
+  }
+  const prods = [0, 1].map((k) => {
+    const x = v[k]!
+    const y = v[k + 2]!
+    return { s: x.s ^ y.s, inf: x.t === INF || y.t === INF, zero: x.t === ZERO || y.t === ZERO, x, y }
+  })
+  const [pa, pb] = prods as [(typeof prods)[0], (typeof prods)[0]]
+  if (prods.some((p) => p.inf && p.zero) || (pa.inf && pb.inf && pa.s !== pb.s)) {
+    if (fpexc) env.flags |= IOC
+    return defaultNaN(F32, env)
+  }
+  if ((pa.inf && pa.s === 0) || (pb.inf && pb.s === 0)) return infOf(F32, 0)
+  if (pa.inf || pb.inf) return infOf(F32, 1)
+  if (pa.zero && pb.zero && pa.s === pb.s) return zeroOf(F32, pa.s)
+  const val = (p: (typeof prods)[0]): Val => (p.zero ? { t: ZERO, s: p.s, m: 0n, x: 0, d: false } : { t: NUM, s: p.s, m: p.x.m * p.y.m, x: p.x.x + p.y.x, d: false })
+  const sum = addExact(val(pa), val(pb))
+  return roundSigned(env, F32, sum.m, sum.x, env.rmode, { fpexc })
 }
 
 /** FRECPS: 2 − op1 × op2, fused (infinity times zero gives 2.0). */

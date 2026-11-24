@@ -43,15 +43,54 @@ const SIMD_OTHER = /^(f1cvtl2?|f2cvtl2?|bf1cvtl2?|bf2cvtl2?|fcvtn2?|fscale|fdot|
 /** Operations of the SYS family from features outside the plan: MTE tags, PoPS, OCCMO, MEC, RME, ATS1A, TLBIW. */
 const SYS_OTHER = /^(dc (i?gd?(vac|sw)|c(i)?gd?(vac|sw|vap|vadp)|gva|gzva|z?gbva|civaps|cigdvaps|c(i)?(gd)?vaoc|ci(gd)?pae|ci(gd)?papa)|at s1e[123]a|tlbi (vmallws2e1|paall|rpal?os))/
 
-/** Implemented forms whose mnemonics SIMD_OTHER also matches: FCVTN to half or single, LDAPUR/STLUR of general registers. */
-const IN_SCOPE_FORMS = (text: string) => /^fcvtn2?\s+v\d+\.(4h|8h|2s|4s),\s*v\d+\.(4s|2d)/i.test(text.trim()) || /^(ldapur|stlur)\s+[wx]/i.test(text.trim())
+/**
+ * Implemented forms whose mnemonics SIMD_OTHER also matches: FCVTN to half or single, LDAPUR/STLUR of general
+ * registers, and SVE's FSCALE, FDOT and FMLALB/FMLALT on halfwords.
+ */
+const IN_SCOPE_FORMS = (text: string) =>
+  /^fcvtn2?\s+v\d+\.(4h|8h|2s|4s),\s*v\d+\.(4s|2d)/i.test(text.trim()) ||
+  /^(ldapur|stlur)\s+[wx]/i.test(text.trim()) ||
+  /^fscale\s+z\d+\.[hsd],\s*p\d+\/m/i.test(text.trim()) ||
+  /^(fdot|fmlal[bt])\s+z\d+\.s,\s*z\d+\.h,/i.test(text.trim())
+
+/**
+ * Outside the plan in the SVE space: SVE2.2 and SVE2.3 (zeroing forms of the unary operations, FIRSTP, LASTP,
+ * EXPAND, COMPACT of bytes and halfwords, FRINT32X…FRINT64Z, ADDQP, ADDSUBP, SABAL, UABAL, the widening
+ * SCVTF/UCVTF and SCVTFLT/UCVTFLT, the narrowing FCVTZSN/FCVTZUN), FP8 conversions, LUTI6, FEAT_SVE_AES2
+ * (multi-vector AES and PMULL/PMLAL), CPA (MADPT, MLAPT), the mixed-width FMMLA (F16F32MM, F8F16MM, F8F32MM)
+ * and BFSCALE; and, until SME's phase, ADDSVL, ADDSPL and RDSVL.
+ */
+function sveOther(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, ' ')
+  const m = t.split(' ')[0]!
+  if (/^(firstp|lastp|expand|addqp|addsubp|sabal|uabal|madpt|mlapt|bfscale|fcvtzsn|fcvtzun|[su]cvtflt|b?f[12]cvt(lt)?|luti6|addsvl|addspl|rdsvl|pmlal)$/.test(m)) return true
+  if (/^frint(32|64)[xz] z/.test(t) || /^(bf|f)cvtn[bt]? z\d+\.b,/.test(t)) return true
+  if (m !== 'movprfx' && /^\S+ z\d+\.[bhsdq], p\d+\/z, z\d+\.[bhsdq]$/.test(t)) return true
+  if (m === 'compact' && /^compact z\d+\.[bh],/.test(t)) return true
+  if (/^[su]cvtf z\d+\.\w, z\d+\.\w$/.test(t)) return true
+  if (/^(aese|aesd|aesemc|aesdimc|pmull) \{/.test(t)) return true
+  const mm = /^fmmla z\d+\.(\w), z\d+\.(\w),/.exec(t)
+  return !!mm && mm[1] !== mm[2]
+}
 
 export function outOfScope(text: string): boolean {
   const m = text.trim().split(/\s+/)[0]!.toLowerCase()
-  return OUT_OF_SCOPE.has(m) || LSUI.test(m) || OTHER.test(m) || (SIMD_OTHER.test(m) && !IN_SCOPE_FORMS(text)) || SYS_OTHER.test(text.trim().toLowerCase().replace(/\s+/g, ' '))
+  return OUT_OF_SCOPE.has(m) || LSUI.test(m) || OTHER.test(m) || (SIMD_OTHER.test(m) && !IN_SCOPE_FORMS(text)) || SYS_OTHER.test(text.trim().toLowerCase().replace(/\s+/g, ' ')) || sveOther(text)
 }
 
 /** A system register LLVM names but we print generically (we name only the registers we implement). */
 export function unnamedSysreg(ours: string, llvm: string): boolean {
   return /\bs[0-3]_[0-7]_c\d+_c\d+_[0-7]\b/.test(ours) && !/\bs[0-3]_[0-7]_c\d+_c\d+_[0-7]\b/i.test(llvm) && /^(mrs|msr)\b/i.test(llvm.trim())
+}
+
+/**
+ * SVE element immediates: LLVM prints them unsigned in the element's width (mov z0.b, #0xa7), we print
+ * them signed as GNU objdump does (#-89). Equal when our negative values, taken in that width, match.
+ */
+export function sameSveImm(ours: string, llvm: string): boolean {
+  const m = /\bz\d+\.([bhsd])\b/.exec(ours)
+  if (!m || !/#-/.test(ours)) return false
+  const bits = BigInt(8 << 'bhsd'.indexOf(m[1]!))
+  const fixed = ours.replace(/#-(0x[0-9a-f]+|\d+)/g, (_, v: string) => '#' + ((1n << bits) - BigInt(v)).toString())
+  return normalizeAsm(fixed) === normalizeAsm(llvm)
 }

@@ -24,6 +24,11 @@ export interface RegisterSpec {
    * registers are read as bytes (readRegisterBytes): a SIMD or SVE vector, an SVE predicate, the SME ZA array.
    */
   kind: 'int' | 'float' | 'flag' | 'special' | 'vector' | 'predicate' | 'matrix'
+  /**
+   * The id of a wider register whose low bits this one is (v<n> is the low 128 bits of z<n>): the two names
+   * show the same storage, and a list of registers such as the calculator's demo shows only one of them.
+   */
+  partOf?: number
   /** Writes are discarded ($zero, xzr). */
   hardwired?: boolean
   /** Touched by every step (the PC); not coloured by read/write status. */
@@ -382,6 +387,20 @@ export interface ReferenceTable {
   groups: { title?: Text; rows: RefRow[] }[]
 }
 
+/** A machine option the plugin offers (AArch64's SVE vector length), chosen from a short list. */
+export interface MachineSetting {
+  id: string
+  title: Text
+  note: Text
+  options: { value: number; label: Text }[]
+  default: number
+}
+
+export interface MachineOptions {
+  /** Values of the plugin's settings by id; missing ones take their defaults. */
+  settings?: Record<string, number>
+}
+
 export interface IsaPlugin {
   id: string
   displayName: string
@@ -442,7 +461,9 @@ export interface IsaPlugin {
   /** The register that always reads zero, if any; the calculator's demo leaves it out of the inputs. */
   zeroRegister?: number
   assemble(source: SourceFile, options?: AssembleOptions): AssembleResult
-  createMachine(program: Program, env: Environment): Machine
+  /** Options of the simulated machine the user may change; a change starts the program again. */
+  settings?: MachineSetting[]
+  createMachine(program: Program, env: Environment, options?: MachineOptions): Machine
   /** Decode one instruction word at an address. */
   decode(word: number, addr: number): DecodedView
   /** Encode one line of assembly on its own. `labels` gives addresses to label operands. */

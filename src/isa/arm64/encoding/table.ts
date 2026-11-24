@@ -10,7 +10,7 @@ import { L, type Text } from '../../../core/i18n'
 import type { Tok } from '../lexer'
 import type { Cpu } from '../instructions/types'
 import { build, extract, parsePattern, type Pattern } from './pattern'
-import { COND_NAMES, printWidths, resolve } from './operands'
+import { COND_ALIASES, COND_NAMES, printWidths, resolve } from './operands'
 import {
   buildSyntax,
   compileSyntax,
@@ -107,7 +107,7 @@ function index(form: Form) {
   formsByKey.set(form.key, form)
   const m = form.mnemonic.toLowerCase()
   if (m.includes('<cond>')) {
-    const names = [...COND_NAMES.map((n, i) => [n, i] as const), ['cs', 2] as const, ['cc', 3] as const]
+    const names = [...COND_NAMES.map((n, i) => [n, i] as const), ...Object.entries(COND_ALIASES)]
     for (const [n, i] of names) {
       const key = m.replace('<cond>', n)
       const list = byMnemonic.get(key) ?? []

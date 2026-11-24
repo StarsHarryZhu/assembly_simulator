@@ -15,6 +15,7 @@ import { gprName, parseGpr, SYSREG_BY_ENC, SYSREG_BY_NAME } from '../registers'
 import { decodeBitmask, encodeBitmask } from './bitmask'
 import { fmtImm, hexAddr, unify, vaOf, type Fields, type OperandStream, type OperandType, type OpSpec } from './syntax'
 import { resolveSimd } from './simd'
+import { resolveSve } from './sve'
 
 const sext = (v: number, bits: number) => (bits >= 32 ? v | 0 : (v << (32 - bits)) >> (32 - bits))
 
@@ -316,7 +317,8 @@ const pacoff: OperandType<null> = {
 /* ------------------------------------------------------------------ named operands */
 
 export const COND_NAMES = ['eq', 'ne', 'hs', 'lo', 'mi', 'pl', 'vs', 'vc', 'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv']
-const COND_ALIASES: Record<string, number> = { cs: 2, cc: 3 }
+/** Other names of conditions: cs and cc, and SVE's names for the flags its predicate tests set. */
+export const COND_ALIASES: Record<string, number> = { cs: 2, cc: 3, none: 0, any: 1, nlast: 2, last: 3, first: 4, nfrst: 5, pmore: 8, plast: 9, tcont: 10, tstop: 11 }
 export function condNumber(name: string): number | null {
   const n = COND_NAMES.indexOf(name.toLowerCase())
   if (n >= 0) return n
@@ -996,6 +998,8 @@ function resolveUncached(name: string): OpSpec {
   }
   const simd = resolveSimd(name)
   if (simd) return simd
+  const sve = resolveSve(name)
+  if (sve) return sve
   throw new Error(`unknown operand <${name}>`)
 }
 

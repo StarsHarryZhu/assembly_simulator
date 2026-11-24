@@ -12,11 +12,11 @@ const code = (text: string) =>
     .join('\n')
 const CJK = /[　-鿿＀-￯]/
 
-function run(text: string, stdin = '') {
+function run(text: string, stdin = '', vl?: number) {
   const r = arm64.assemble({ name: 'example.s', text })
   expect(r.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
   const env = new ConsoleEnv(stdin)
-  const m = arm64.createMachine(r.program!, env)
+  const m = arm64.createMachine(r.program!, env, vl ? { settings: { vl } } : undefined)
   m.run(1_000_000, new Set())
   return { out: env.output, halt: m.halted }
 }
@@ -35,6 +35,7 @@ const EXPECTED: Record<string, { stdin?: string; out: string }> = {
       'as float: 1.41421354, x * 10^6 rounded: 1414214\n',
   },
   simd: { out: 'a . b = 816\n1^2 + 2^2 + ... + 16^2 = 1496\n' },
+  sve: { out: 'sum of a*x + y = 399, VL = 256 bits, 3 rounds\n' },
   exceptions: { out: '  exception: EC = 0x24 at 0x400010\n  exception: EC = 0x3c at 0x400014\nBack in main after two exceptions.\n' },
 }
 
@@ -61,4 +62,14 @@ describe('examples', () => {
       }
     })
   }
+
+  it('sve: the same sum at every vector length, in fewer rounds as it grows', () => {
+    const sve = arm64.examples.find((e) => e.id === 'sve')!
+    for (const [vl, rounds] of [
+      [128, 5],
+      [512, 2],
+      [2048, 1],
+    ])
+      expect(run(sve.text.en, '', vl).out).toBe(`sum of a*x + y = 399, VL = ${vl} bits, ${rounds} rounds\n`)
+  })
 })

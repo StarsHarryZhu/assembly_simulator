@@ -11,7 +11,7 @@ import { loadTables } from '../../src/isa/arm64/instructions/index'
 import { decodeWord, disassemble, encodeInstr } from '../../src/isa/arm64/encoding/table'
 import { Mismatch } from '../../src/isa/arm64/encoding/syntax'
 import { tokenize } from '../../src/isa/arm64/lexer'
-import { normalizeAsm, outOfScope, unnamedSysreg } from './llvm-scope'
+import { normalizeAsm, outOfScope, sameSveImm, unnamedSysreg } from './llvm-scope'
 import { assemble } from '../../src/isa/arm64/assembler'
 
 loadTables()
@@ -50,7 +50,7 @@ describe('encodings match LLVM', () => {
           continue
         }
         if (unnamedSysreg(ours, text)) continue
-        if (normalizeAsm(ours) !== normalizeAsm(text)) problems.push(`${w}: we print "${ours}", LLVM "${text}"`)
+        if (normalizeAsm(ours) !== normalizeAsm(text) && !sameSveImm(ours, text)) problems.push(`${w}: we print "${ours}", LLVM "${text}"`)
         // A word LLVM accepts in a non-canonical form assembles to the canonical one; clang refuses to
         // assemble some (UNPREDICTABLE register choices), and then there is nothing to compare.
         if (canon === null) continue

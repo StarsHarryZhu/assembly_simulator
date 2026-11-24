@@ -14,12 +14,18 @@ import * as simdFp from './simd-fp'
 import * as simdInt from './simd-int'
 import * as simdLdst from './simd-ldst'
 import * as simdMore from './simd-more'
+import * as sveInt from './sve-int'
+import * as sveFp from './sve-fp'
+import * as sveLdst from './sve-ldst'
+import * as svePerm from './sve-perm'
+import * as svePred from './sve-pred'
+import * as sve2 from './sve2'
 
 let done = false
 
 export function loadTables(): void {
   if (done) return
   done = true
-  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto]) defineInstrs(t.INSTRS)
-  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto]) defineAliases(t.ALIASES)
+  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto, sveInt, svePerm, svePred, sveFp, sveLdst, sve2]) defineInstrs(t.INSTRS)
+  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto, sveInt, svePerm, svePred, sveFp, sveLdst, sve2]) defineAliases(t.ALIASES)
 }

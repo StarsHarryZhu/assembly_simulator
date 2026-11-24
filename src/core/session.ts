@@ -17,6 +17,7 @@ import type {
   InputRequest,
   IsaPlugin,
   Machine,
+  MachineOptions,
   RegChange,
   SourceFile,
   StepInfo,
@@ -238,7 +239,7 @@ export class Session {
     this.last = null
     if (this.result.ok && this.result.program) {
       const p = this.result.program
-      this.machine = this.isa.createMachine(p, this.env)
+      this.machine = this.isa.createMachine(p, this.env, this.machineOptions())
       this.messages.push({
         severity: 'info',
         text: L(`汇编成功：${p.instructions.length} 条真指令，${p.declarations.length} 条数据声明。`, `Assembled: ${p.instructions.length} basic instructions, ${p.declarations.length} data declarations.`),
@@ -320,6 +321,21 @@ export class Session {
     this.notify()
   }
 
+  /** Values of the plugin's machine settings; change them with setSetting. */
+  readonly settings: Record<string, number> = {}
+
+  private machineOptions(): MachineOptions {
+    return { settings: { ...this.settings } }
+  }
+
+  /** Change a machine setting; the program starts again with it. */
+  setSetting(id: string, value: number): void {
+    if (this.settings[id] === value) return
+    this.settings[id] = value
+    if (this.machine) this.reset()
+    else this.notify()
+  }
+
   reset(): void {
     this.stopTimer()
     this.mode = 'idle'
@@ -328,7 +344,7 @@ export class Session {
       this.assemble()
       return
     }
-    this.machine = this.isa.createMachine(this.result!.program!, this.env)
+    this.machine = this.isa.createMachine(this.result!.program!, this.env, this.machineOptions())
     this.console = []
     this.last = null
     this.notify()

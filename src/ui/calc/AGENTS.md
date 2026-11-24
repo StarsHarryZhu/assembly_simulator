@@ -31,7 +31,8 @@ words back into assembly with fields and notes.
   operand editors, reference tables, machine code per word.
 - `ReferenceTable.vue` — one reference table (registers read in green, written in red); folds into
   cards below about 620 px.
-- `DemoRunner.vue` — runs the analysed line step by step and shows registers and memory before and after.
+- `DemoRunner.vue` — runs the analysed line step by step, with the settings chosen under Edit & run (the SVE
+  vector length), and shows registers at their current width and memory before and after.
 - `DecoderTab.vue` — machine words (one per line, optional `@ address`) to assembly.
 - `BitFields.vue` — one word as a row of fields with bits, value and meaning.
 - `values.ts` — parsing a word typed as hex, binary, decimal or (optionally) a float, wider values, and addresses.

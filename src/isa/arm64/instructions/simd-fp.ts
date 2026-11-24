@@ -529,7 +529,7 @@ for (const [U, opc, m, desc] of [
 /* ------------------------------------------------------------------ FMLAL, FMLSL (FEAT_FHM) */
 
 /** A half-precision value as single precision, exactly (FZ16 flushes denormals; NaNs keep signalling). */
-function widenHalf(e: Env, h: bigint): bigint {
+export function widenHalf(e: Env, h: bigint): bigint {
   const s = (h >> 15n) & 1n
   const exp = (h >> 10n) & 31n
   const frac = h & 0x3ffn
@@ -679,13 +679,14 @@ INSTRS_.push({
 /* ------------------------------------------------------------------ BFloat16 (FEAT_BF16) */
 
 /** BFloat16 to single precision: the bits shifted up. */
-const bf = (h: bigint) => h << 16n
+export const bf = (h: bigint) => h << 16n
 /**
  * The BFloat16 dot product step with FPCR.EBF = 0: addend + (a1 × b1 + a2 × b2), unfused, whatever the
  * FPCR says: BFRound (to odd, overflow to infinity), denormals flushed, default NaN, no exception flags.
  */
-function bfDotAdd(addend: bigint, a1: bigint, a2: bigint, b1: bigint, b2: bigint): bigint {
-  const env = new sf.FpEnv(sf.DN | sf.FZ | sf.FIZ)
+export function bfDotAdd(addend: bigint, a1: bigint, a2: bigint, b1: bigint, b2: bigint, fpcr = 0): bigint {
+  // FPCR.AH still picks the default NaN's sign.
+  const env = new sf.FpEnv(sf.DN | sf.FZ | sf.FIZ | (fpcr & sf.AH))
   env.mode = sf.RBF
   const p1 = sf.fpMul(env, sf.F32, bf(a1), bf(b1), false)
   const p2 = sf.fpMul(env, sf.F32, bf(a2), bf(b2), false)
@@ -701,7 +702,7 @@ function bfdot(c: Cpu, f: Fields, m: ((i: number) => [bigint, bigint]) | null): 
     f.Rd!,
     D.map((d, i) => {
       const [m1, m2] = m ? m(i) : [M[2 * i]!, M[2 * i + 1]!]
-      return bfDotAdd(d, N[2 * i]!, N[2 * i + 1]!, m1, m2)
+      return bfDotAdd(d, N[2 * i]!, N[2 * i + 1]!, m1, m2, c.fpEnv().fpcr)
     }),
     2,
   )
@@ -784,8 +785,9 @@ INSTRS_.push({
     const R = readV(c, f.Rd!, 2, 16).map((d, k) => {
       const i = k >> 1
       const j = k & 1
-      const s = bfDotAdd(d, N[4 * i]!, N[4 * i + 1]!, M[4 * j]!, M[4 * j + 1]!)
-      return bfDotAdd(s, N[4 * i + 2]!, N[4 * i + 3]!, M[4 * j + 2]!, M[4 * j + 3]!)
+      const fpcr = c.fpEnv().fpcr
+      const s = bfDotAdd(d, N[4 * i]!, N[4 * i + 1]!, M[4 * j]!, M[4 * j + 1]!, fpcr)
+      return bfDotAdd(s, N[4 * i + 2]!, N[4 * i + 3]!, M[4 * j + 2]!, M[4 * j + 3]!, fpcr)
     })
     writeV(c, f.Rd!, R, 2)
   },

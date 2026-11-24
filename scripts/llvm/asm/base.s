@@ -89,6 +89,10 @@ cset w0, al
 csel x0, x1, x2, ge
 ccmp x0, #5, #4, ne
 ccmn w0, w1, #0, cs
+csel x0, x1, x2, first
+cset w0, none
+csinc x0, x1, x2, tcont
+ccmp x0, #5, #4, pmore
 rev x0, x1
 rev64 x0, x1
 rev32 x0, x1
