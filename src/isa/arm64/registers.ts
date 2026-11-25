@@ -3,8 +3,8 @@
  *
  * Ids: x0–x30 0–30, sp 31 (the stack pointer of the current exception level), pc 32, the N Z C V flags
  * 33–36, the SIMD&FP registers v0–v31 40–71, the SVE registers z0–z31 72–103 (z<n> is the whole register
- * whose low 128 bits are v<n>, so both ids show the same storage), p0–p15 104–119 and FFR 120, and the
- * system registers from 140. Ids 121–132 are kept for the SME registers of a later phase.
+ * whose low 128 bits are v<n>, so both ids show the same storage), p0–p15 104–119, FFR 120, the
+ * SME array ZA 121, the lookup table ZT0 122, and the system registers from 140 (123–139 are free).
  */
 import { T, type Text } from '../../core/i18n'
 import type { RegisterBank, RegisterSpec } from '../../core/isa'
@@ -25,6 +25,10 @@ export const Z0 = 72
 export const P0 = 104
 /** The first-fault register, kept like a 17th predicate. */
 export const FFR = 120
+/** The SME array: SVL / 8 rows of SVL / 8 bytes, read whole with readRegisterBytes. */
+export const ZA = 121
+/** The SME2 lookup table register, 512 bits. */
+export const ZT0 = 122
 
 /** System registers the machine keeps, with their ids and MRS/MSR encodings (o0:op1:CRn:CRm:op2 as 3:op1:n:m:op2). */
 export interface SysRegDef {
@@ -86,6 +90,10 @@ export const SYSREGS: SysRegDef[] = [
   sys('FPCR', sysEnc(3, 3, 4, 4, 0), 0, 0, T('浮点控制：舍入方式 RMode（第 23..22 位）、清零 FZ、默认 NaN DN、替代处理 AH 等', 'Floating-point control: rounding mode RMode (bits 23..22), flush to zero FZ, default NaN DN, alternate handling AH and more')),
   sys('ZCR_EL1', sysEnc(3, 0, 1, 2, 0), 1, 1, T('SVE 控制：LEN（第 3..0 位）把向量长度限制在 (LEN + 1) × 128 位以内', 'SVE control: LEN (bits 3..0) limits the vector length to (LEN + 1) × 128 bits'), true),
   sys('FPSR', sysEnc(3, 3, 4, 4, 1), 0, 0, T('浮点状态：累计的异常标志 IOC DZC OFC UFC IXC IDC（第 7..0 位），饱和标志 QC（第 27 位）', 'Floating-point status: cumulative exceptions IOC DZC OFC UFC IXC IDC (bits 7..0), saturation QC (bit 27)')),
+  sys('SVCR', sysEnc(3, 3, 4, 2, 2), 0, 0, T('流式模式控制：SM（第 0 位）流式 SVE 模式，ZA（第 1 位）ZA 存储可用；smstart / smstop 改它', 'Streaming mode control: SM (bit 0) Streaming SVE mode, ZA (bit 1) ZA storage enabled; smstart / smstop change it'), true),
+  sys('SMCR_EL1', sysEnc(3, 0, 1, 2, 6), 1, 1, T('SME 控制：LEN（第 3..0 位）把流式向量长度限制在 (LEN + 1) × 128 位以内', 'SME control: LEN (bits 3..0) limits the streaming vector length to (LEN + 1) × 128 bits'), true),
+  sys('TPIDR2_EL0', sysEnc(3, 3, 13, 0, 5), 0, 0, T('第二个线程指针；SME 的调用约定用它找懒保存 ZA 的缓冲区', 'Second thread pointer; the SME calling convention keeps the lazy ZA save buffer here')),
+  sys('SMIDR_EL1', sysEnc(3, 1, 0, 0, 6), 1, null, T('SME 实现的编号', 'SME implementation ID')),
 ]
 
 export const SYSREG_BY_ENC = new Map(SYSREGS.map((r) => [r.enc, r]))
@@ -107,6 +115,8 @@ export const NZCV_SYS = sysId('NZCV')
 export const FPCR_ID = sysId('FPCR')
 export const FPSR_ID = sysId('FPSR')
 export const ZCR_EL1 = sysId('ZCR_EL1')
+export const SVCR = sysId('SVCR')
+export const SMCR_EL1 = sysId('SMCR_EL1')
 
 export const REGISTER_COUNT = nextId
 
@@ -187,9 +197,19 @@ export const REGISTER_BANKS: RegisterBank[] = [
     ],
   },
   {
+    id: 'sme',
+    title: T('SME 寄存器', 'SME registers'),
+    registers: [
+      { id: SVCR, name: 'SVCR', bits: 64, kind: 'special', note: SYSREG_BY_ID.get(SVCR)!.note },
+      { id: ZA, name: 'za', bits: 2048 * 2048, kind: 'matrix', note: T('SME 的 ZA 阵列：SVL / 8 行，每行 SVL / 8 字节；按元素大小分成 tile（za0.s 等），外积和多向量指令在这里累加', 'The SME ZA array: SVL / 8 rows of SVL / 8 bytes each, split into tiles by element size (za0.s and so on); outer products and multi-vector instructions accumulate here') },
+      { id: ZT0, name: 'zt0', bits: 512, kind: 'vector', note: T('SME2 的查表寄存器（512 位），luti2 / luti4 从这里取值', 'The SME2 lookup table register (512 bits) that luti2 / luti4 read') },
+      { id: SMCR_EL1, name: 'SMCR_EL1', bits: 64, kind: 'special', note: SYSREG_BY_ID.get(SMCR_EL1)!.note },
+    ],
+  },
+  {
     id: 'sys',
     title: T('系统寄存器', 'System registers'),
-    registers: SYSREGS.filter((r) => r.shown && r.id !== ZCR_EL1).map((r) => ({ id: r.id, name: r.name, bits: 64, kind: 'special' as const, note: r.note })),
+    registers: SYSREGS.filter((r) => r.shown && r.id !== ZCR_EL1 && r.id !== SVCR && r.id !== SMCR_EL1).map((r) => ({ id: r.id, name: r.name, bits: 64, kind: 'special' as const, note: r.note })),
   },
 ]
 

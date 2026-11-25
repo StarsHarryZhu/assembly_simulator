@@ -12,14 +12,17 @@ const code = (text: string) =>
     .join('\n')
 const CJK = /[　-鿿＀-￯]/
 
-function run(text: string, stdin = '', vl?: number) {
+function run(text: string, stdin = '', vl?: number, svl?: number) {
   const r = arm64.assemble({ name: 'example.s', text })
   expect(r.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
   const env = new ConsoleEnv(stdin)
-  const m = arm64.createMachine(r.program!, env, vl ? { settings: { vl } } : undefined)
+  const m = arm64.createMachine(r.program!, env, vl || svl ? { settings: { ...(vl ? { vl } : {}), ...(svl ? { svl } : {}) } } : undefined)
   m.run(1_000_000, new Set())
   return { out: env.output, halt: m.halted }
 }
+
+/** The sme example's product: A, then the sum of each row of A. */
+const SME_C = '    1    2    3    6\n    4    5    6   15\n    7    8    9   24\n   10   11   12   33\n'
 
 const EXPECTED: Record<string, { stdin?: string; out: string }> = {
   welcome: { out: '1 + 2 + ... + 10 = 55\n' },
@@ -36,6 +39,7 @@ const EXPECTED: Record<string, { stdin?: string; out: string }> = {
   },
   simd: { out: 'a . b = 816\n1^2 + 2^2 + ... + 16^2 = 1496\n' },
   sve: { out: 'sum of a*x + y = 399, VL = 256 bits, 3 rounds\n' },
+  sme: { out: SME_C + 'SVL = 512 bits, za0.s is 16 x 16 floats\n' },
   exceptions: { out: '  exception: EC = 0x24 at 0x400010\n  exception: EC = 0x3c at 0x400014\nBack in main after two exceptions.\n' },
 }
 
@@ -71,5 +75,10 @@ describe('examples', () => {
       [2048, 1],
     ])
       expect(run(sve.text.en, '', vl).out).toBe(`sum of a*x + y = 399, VL = ${vl} bits, ${rounds} rounds\n`)
+  })
+
+  it('sme: the same product at every streaming vector length', () => {
+    const sme = arm64.examples.find((e) => e.id === 'sme')!
+    for (const svl of [128, 256, 1024, 2048]) expect(run(sme.text.en, '', undefined, svl).out).toBe(`${SME_C}SVL = ${svl} bits, za0.s is ${svl / 32} x ${svl / 32} floats\n`)
   })
 })

@@ -15,4 +15,5 @@ Committed oracle output for the AArch64 tests, so `npm test` runs without clang 
 
 ## 4. Progress
 
-Done: LLVM and native fixtures for the A64 base, floating point, Neon and crypto. Not done: SVE and SME.
+Done: LLVM and native fixtures for the A64 base, floating point, Neon and crypto, SVE and SME. Not done:
+nothing planned.

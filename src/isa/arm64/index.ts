@@ -3,13 +3,14 @@ import { T, type Text } from '../../core/i18n'
 import type { CatalogEntry, Environment, ExampleProgram, IsaPlugin, LabelKind, Program, SourceFile } from '../../core/isa'
 import { assemble, DIRECTIVES, KTEXT_BASE, KSTACK_TOP, TEXT_BASE } from './assembler'
 import { analyzeLine, buildLine } from './calc'
-import { createMachine, DEFAULT_VL, INITIAL_SP } from './cpu'
+import { createMachine, DEFAULT_SVL, DEFAULT_VL, INITIAL_SP } from './cpu'
 import { decodeView } from './decoder'
 import { allForms, mnemonicList, operandsOf, sampleLine } from './encoding/table'
 import { formatSource } from './format'
 import { loadTables } from './instructions/index'
 import { HEAP_BASE, HEAP_LIMIT, MALLOC_BASE, MALLOC_LIMIT, MMAP_BASE, MMAP_LIMIT, STACK_SIZE, STACK_TOP, STUB_BASE, STUB_END } from './linux'
 import { FP_REG, GPR_WORDS, parseGpr, parseSveReg, parseVreg, PC, REGISTER_BANKS, REGISTER_COUNT, SP, SVE_WORDS, SYSREGS, VREG_WORDS } from './registers'
+import { parseZa, SME_WORDS } from './encoding/sme'
 import { REFERENCES } from './references'
 
 loadTables()
@@ -36,6 +37,8 @@ export const GROUP_TITLES: Record<string, Text> = {
   svefp: T('SVE 浮点', 'SVE floating point'),
   sveload: T('SVE 加载存储', 'SVE loads and stores'),
   sve2: T('SVE2 和 SVE2.1', 'SVE2 and SVE2.1'),
+  sme: T('SME 矩阵', 'SME matrix'),
+  sme2: T('SME2 多向量', 'SME2 multi-vector'),
 }
 
 export const CATALOG: CatalogEntry[] = allForms().map((form) => ({
@@ -65,7 +68,7 @@ for (const form of allForms()) {
  * Example programs, in menu order. examples/<id>.s has Chinese comments, examples/en/<id>.s the same code
  * with English comments. Each file starts with "// <title>".
  */
-const EXAMPLE_ORDER = ['welcome', 'hello', 'hello-printf', 'factorial', 'input', 'heap', 'float', 'simd', 'sve', 'exceptions']
+const EXAMPLE_ORDER = ['welcome', 'hello', 'hello-printf', 'factorial', 'input', 'heap', 'float', 'simd', 'sve', 'sme', 'exceptions']
 const zhFiles = import.meta.glob('./examples/*.s', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const enFiles = import.meta.glob('./examples/en/*.s', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const idOf = (path: string) => path.replace(/^.*\/|\.s$/g, '')
@@ -111,7 +114,7 @@ export const arm64: IsaPlugin = {
   },
   language: {
     mnemonics: mnemonicList(),
-    registers: [...GPR_WORDS, ...VREG_WORDS, ...SVE_WORDS, ...SYSREGS.map((r) => r.name.toLowerCase())],
+    registers: [...GPR_WORDS, ...VREG_WORDS, ...SVE_WORDS, ...SME_WORDS, ...SYSREGS.map((r) => r.name.toLowerCase())],
     directives: DIRECTIVES,
     sections: ['.text', '.data', '.bss', '.rodata', '.section'],
     dataSections: ['.data', '.bss', '.rodata'],
@@ -120,7 +123,7 @@ export const arm64: IsaPlugin = {
     lineStartComment: '#',
     blockComment: ['/*', '*/'],
     statementSeparator: ';',
-    isRegister: (word) => parseGpr(word) !== null || parseVreg(word) !== null || parseSveReg(word) !== null || word.toLowerCase() === 'ffr',
+    isRegister: (word) => parseGpr(word) !== null || parseVreg(word) !== null || parseSveReg(word) !== null || parseZa(word) !== null || ['ffr', 'zt0'].includes(word.toLowerCase()),
     fileExtension: '.s',
     dataDirectives: { dword: '.quad', word: '.word', half: '.hword', byte: '.byte', ascii: '.ascii', asciiz: '.asciz', space: '.skip', float: '.float', double: '.double' },
   },
@@ -153,6 +156,13 @@ export const arm64: IsaPlugin = {
       note: T('z 寄存器有多少位（VL）。程序不该依赖它：同一个程序在不同长度下都应该算出同样的结果。', 'How many bits a z register has (VL). Programs should not depend on it: the same program should compute the same result at every length.'),
       options: [128, 256, 512, 1024, 2048].map((v) => ({ value: v, label: T(`${v} 位`, `${v} bits`) })),
       default: DEFAULT_VL,
+    },
+    {
+      id: 'svl',
+      title: T('SME 流式向量长度', 'SME streaming vector length'),
+      note: T('流式 SVE 模式（smstart 之后）里 z 寄存器的位数（SVL），也决定 ZA 的大小：SVL / 8 行，每行 SVL / 8 字节。', 'How many bits a z register has in Streaming SVE mode (after smstart), the SVL; it also sizes ZA: SVL / 8 rows of SVL / 8 bytes.'),
+      options: [128, 256, 512, 1024, 2048].map((v) => ({ value: v, label: T(`${v} 位`, `${v} bits`) })),
+      default: DEFAULT_SVL,
     },
   ],
   createMachine: (program: Program, env: Environment, options) => createMachine(program, env, options),

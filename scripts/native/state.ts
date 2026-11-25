@@ -165,3 +165,27 @@ export function sveState(seed: number, vl: number): SveState {
   })
   return { z, p }
 }
+
+export interface ZaState {
+  /** The ZA array, `svl` rows of `svl` bytes. */
+  za: Uint8Array
+  /** ZT0, 64 bytes. */
+  zt0: Uint8Array
+}
+
+/**
+ * ZA and ZT0 for a seed and a streaming vector length in bytes, from a generator of their own: every row and
+ * ZT0 is a run of 128-bit chunks like vectorState's registers.
+ */
+export function zaState(seed: number, svl: number): ZaState {
+  const r = rng(seed ^ 0x3c6ef372)
+  const chunk = chunk128(r)
+  const fill = (bytes: Uint8Array) => {
+    for (let at = 0; at < bytes.length; at += 16) {
+      let v = chunk()
+      for (let i = 0; i < 16; i++, v >>= 8n) bytes[at + i] = Number(v & 0xffn)
+    }
+    return bytes
+  }
+  return { za: fill(new Uint8Array(svl * svl)), zt0: fill(new Uint8Array(64)) }
+}

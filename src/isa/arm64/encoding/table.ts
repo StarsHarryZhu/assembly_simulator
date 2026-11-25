@@ -29,6 +29,13 @@ import {
 
 export type Exec = (c: Cpu, f: Fields) => void
 
+/**
+ * What an instruction needs of PSTATE (checked by the machine before it runs): Streaming SVE mode (most SME
+ * instructions), not Streaming SVE mode (what this machine, like the M5 without FEAT_SME_FA64, forbids
+ * there), ZA storage enabled, or ZT0 (which also needs ZA enabled).
+ */
+export const NEED = { streaming: 1, nonStreaming: 2, za: 4, zt0: 8 } as const
+
 export interface InstrSpec {
   id: string
   mnemonic: string
@@ -53,7 +60,12 @@ export interface InstrSpec {
   exec: Exec
   /** Explanations for the decoder. */
   notes?: (f: Fields, pc: number) => string[]
+  /** NEED bits: the PSTATE.SM and PSTATE.ZA it requires (a function when they depend on the fields). */
+  needs?: number | ((f: Fields) => number)
 }
+
+/** The NEED bits of an instruction with these fields. */
+export const needsOf = (spec: InstrSpec, f: Fields): number => (typeof spec.needs === 'function' ? spec.needs(f) : (spec.needs ?? 0))
 
 export interface AliasSpec {
   id: string

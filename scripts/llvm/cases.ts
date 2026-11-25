@@ -47,7 +47,7 @@ export function wordCases(perInstr = 24, seed = 1): WordGroup[] {
 }
 
 /** Top-level classes (op0, bits 28:25) implemented so far, for the unallocated-space comparison. */
-export const CLASSES: { name: string; mask: number; value: number }[] = [
+export const CLASSES: { name: string; mask: number; value: number; count?: number }[] = [
   { name: 'dp-imm', mask: 0x1c000000, value: 0x10000000 },
   { name: 'branch-sys', mask: 0x1c000000, value: 0x14000000 },
   { name: 'dp-reg', mask: 0x0e000000, value: 0x0a000000 },
@@ -59,6 +59,8 @@ export const CLASSES: { name: string; mask: number; value: number }[] = [
   { name: 'simd-fp', mask: 0x0e000000, value: 0x0e000000 },
   // SVE, SVE2 and SVE2.1 (op0 0010).
   { name: 'sve', mask: 0x1e000000, value: 0x04000000 },
+  // SME, SME2 and SME2.1 (op0 0000 with bit 31 set); mostly unallocated, so sampled more densely.
+  { name: 'sme', mask: 0x9e000000, value: 0x80000000, count: 20000 },
 ]
 
 /** Random words in the implemented classes. */
@@ -66,7 +68,7 @@ export function classCases(count = 3000, seed = 7): WordGroup[] {
   const rand = rng(seed)
   return CLASSES.map((c) => {
     const words = new Set<number>()
-    while (words.size < count) words.add(((Math.floor(rand() * 2 ** 32) & ~c.mask) | c.value) >>> 0)
+    while (words.size < (c.count ?? count)) words.add(((Math.floor(rand() * 2 ** 32) & ~c.mask) | c.value) >>> 0)
     return { group: `class-${c.name}`, words: [...words] }
   })
 }

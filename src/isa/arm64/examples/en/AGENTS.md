@@ -21,8 +21,9 @@ English comments, shown when the interface language is English.
 - `float.s` — square root of 2 by Newton's method.
 - `simd.s` — dot products with Neon.
 - `sve.s` — a loop that works at any SVE vector length.
+- `sme.s` — a matrix product from outer products into a ZA tile.
 - `exceptions.s` — faults handled at EL1 and resumed.
 
 ## 4. Progress
 
-Done: all ten examples, SVE included. Not done: SME's example (phase 4).
+Done: all eleven examples, SVE and SME included. Not done: nothing planned.

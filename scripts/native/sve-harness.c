@@ -1,17 +1,20 @@
 /*
- * Native behaviour harness for the SVE cases of the AArch64 oracle (scripts/native-golden.mjs). This CPU
- * runs SVE only in streaming mode, so each generated case function (sve-cases.s) enters it (smstart sm),
- * loads FPCR, FPSR, p0-p15, z0-z31, NZCV and x0-x30 from a State, runs one instruction, stores them back
- * and leaves streaming mode. Instructions that streaming mode forbids raise SIGILL; the handler leaves
- * streaming mode before anything else runs.
+ * Native behaviour harness for the SVE and SME cases of the AArch64 oracle (scripts/native-golden.mjs).
+ * This CPU runs SVE only in streaming mode, so each generated case function (sve-cases.s) enters it
+ * (smstart sm, or smstart for SME cases, which also enables ZA), loads FPCR, FPSR, p0-p15, z0-z31 (and for
+ * SME cases ZA and ZT0), NZCV and x0-x30 from a State, runs one instruction, stores them back and leaves
+ * streaming mode. Instructions that streaming mode forbids raise SIGILL; the handler leaves streaming mode
+ * (and disables ZA) before anything else runs.
  *
- * Input: the file named by argv[1]: a header (case count, vector length in bytes, buffer size; 32 bits
- * each, then 4 zero bytes), then per case x0-x30 (pointer registers as buffer offsets), the pointer mask
- * and NZCV (32 bits each), FPCR (64 bits), the predicates (vl / 8 bytes each), the Z registers (vl bytes
- * each) and the buffer. With no argument it prints the streaming vector length in bytes.
+ * Input: the file named by argv[1]: a header (case count, vector length in bytes, buffer size, and 1 if the
+ * cases carry ZA; 32 bits each), then per case x0-x30 (pointer registers as buffer offsets), the pointer
+ * mask and NZCV (32 bits each), FPCR (64 bits), the predicates (vl / 8 bytes each), the Z registers (vl
+ * bytes each), for SME cases ZT0 (64 bytes) and ZA (vl rows of vl bytes), and the buffer. With no argument
+ * it prints the streaming vector length in bytes.
  *
  * Output, one line per case: index, signal (0 if none), NZCV, x0..x30 in hex (registers near the buffer as
- * p<offset>), the buffer in hex, FPSR in hex, then z0..z31 and p0..p15 in hex, most significant byte first.
+ * p<offset>), the buffer in hex, FPSR in hex, then z0..z31 and p0..p15 in hex, most significant byte first,
+ * and for SME cases ZT0 and the ZA rows the same way.
  */
 #include <setjmp.h>
 #include <signal.h>
@@ -27,6 +30,8 @@ typedef struct {
   uint64_t fpsr;       /* 264 */
   uint8_t p[16 * 32];  /* 272: p0-p15, vl / 8 bytes each, packed */
   uint8_t z[32 * 256]; /* 784: z0-z31, vl bytes each, packed */
+  uint8_t zt0[64];     /* 8976 */
+  uint8_t za[256 * 256]; /* 9040: vl rows of vl bytes */
 } State;
 
 typedef void (*CaseFn)(State *);
@@ -43,7 +48,7 @@ static volatile sig_atomic_t caught;
 static void on_signal(int sig, siginfo_t *info, void *ctx) {
   (void)info;
   (void)ctx;
-  __asm__ volatile("smstop sm");
+  __asm__ volatile("smstop");
   caught = sig;
   siglongjmp(jump, 1);
 }
@@ -62,7 +67,7 @@ int main(int argc, char **argv) {
   FILE *in_file = fopen(argv[1], "rb");
   uint32_t head[4];
   if (!in_file || fread(head, 4, 4, in_file) != 4) return 1;
-  uint32_t count = head[0], vl = head[1], size = head[2];
+  uint32_t count = head[0], vl = head[1], size = head[2], with_za = head[3];
   if (vl != svl || count != CASE_COUNT) {
     fprintf(stderr, "streaming vector length %llu, cases made for %u; %u cases, %d compiled\n", (unsigned long long)svl, vl, count, CASE_COUNT);
     return 1;
@@ -88,7 +93,9 @@ int main(int argc, char **argv) {
     memset(&in, 0, sizeof in);
     if (fread(in.x, 8, 31, in_file) != 31) return 1;
     if (fread(meta, 4, 2, in_file) != 2 || fread(&in.fpcr, 8, 1, in_file) != 1) return 1;
-    if (fread(in.p, vl / 8, 16, in_file) != 16 || fread(in.z, vl, 32, in_file) != 32 || fread(mem, 1, size, in_file) != size) return 1;
+    if (fread(in.p, vl / 8, 16, in_file) != 16 || fread(in.z, vl, 32, in_file) != 32) return 1;
+    if (with_za && (fread(in.zt0, 1, 64, in_file) != 64 || fread(in.za, vl, vl, in_file) != vl)) return 1;
+    if (fread(mem, 1, size, in_file) != size) return 1;
     for (int n = 0; n < 31; n++)
       if (meta[0] & (1u << n)) in.x[n] += (uint64_t)(uintptr_t)buf;
     in.nzcv = (uint64_t)meta[1] << 28;
@@ -113,6 +120,10 @@ int main(int argc, char **argv) {
     printf(" %llx", (unsigned long long)s.fpsr);
     for (int n = 0; n < 32; n++) hex(s.z + n * vl, vl);
     for (int n = 0; n < 16; n++) hex(s.p + n * (vl / 8), vl / 8);
+    if (with_za) {
+      hex(s.zt0, 64);
+      for (uint32_t r = 0; r < vl; r++) hex(s.za + r * vl, vl);
+    }
     printf("\n");
   }
   return 0;

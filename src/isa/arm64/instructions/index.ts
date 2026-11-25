@@ -20,12 +20,19 @@ import * as sveLdst from './sve-ldst'
 import * as svePerm from './sve-perm'
 import * as svePred from './sve-pred'
 import * as sve2 from './sve2'
+import * as sme from './sme'
+import * as sme2 from './sme2'
+import * as sme2Vec from './sme2-vec'
+import { markStreaming } from './streaming'
 
 let done = false
 
 export function loadTables(): void {
   if (done) return
   done = true
-  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto, sveInt, svePerm, svePred, sveFp, sveLdst, sve2]) defineInstrs(t.INSTRS)
-  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto, sveInt, svePerm, svePred, sveFp, sveLdst, sve2]) defineAliases(t.ALIASES)
+  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto, sveInt, svePerm, svePred, sveFp, sveLdst, sve2, sme, sme2, sme2Vec]) {
+    markStreaming(t.INSTRS)
+    defineInstrs(t.INSTRS)
+  }
+  for (const t of [dpImm, dpReg, branch, ldst, atomic, fp, simdInt, simdMore, simdFp, simdLdst, crypto, sveInt, svePerm, svePred, sveFp, sveLdst, sve2, sme, sme2, sme2Vec]) defineAliases(t.ALIASES)
 }

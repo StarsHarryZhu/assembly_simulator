@@ -155,6 +155,17 @@ describe('references', () => {
     expect(keys.sort((a, b) => a - b)).toEqual(Object.values(EC).sort((a, b) => a - b))
   })
 
+  it('shows the SME table for SME instructions only, with examples that assemble', () => {
+    const sme = table('sme')
+    const mnemonics = new Set(arm64.catalog.map((e) => e.mnemonic))
+    for (const m of sme.mnemonics) expect(mnemonics.has(m), m).toBe(true)
+    for (const row of sme.groups.flatMap((g) => g.rows)) {
+      if (!row.example) continue
+      const r = arm64.assemble({ name: 'r.s', text: `.text\n${row.example}\n` }, { files: [] })
+      expect(r.diagnostics.filter((d) => d.severity === 'error'), row.example).toEqual([])
+    }
+  })
+
   it('explains every directive the assembler documents with an example that assembles', () => {
     for (const row of table('directives').groups.flatMap((g) => g.rows)) {
       if (!row.example) continue

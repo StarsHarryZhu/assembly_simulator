@@ -51,19 +51,23 @@ const IN_SCOPE_FORMS = (text: string) =>
   /^fcvtn2?\s+v\d+\.(4h|8h|2s|4s),\s*v\d+\.(4s|2d)/i.test(text.trim()) ||
   /^(ldapur|stlur)\s+[wx]/i.test(text.trim()) ||
   /^fscale\s+z\d+\.[hsd],\s*p\d+\/m/i.test(text.trim()) ||
-  /^(fdot|fmlal[bt])\s+z\d+\.s,\s*z\d+\.h,/i.test(text.trim())
+  /^(fdot|fmlal[bt])\s+z\d+\.s,\s*z\d+\.h,/i.test(text.trim()) ||
+  // SME2: FDOT into ZA from halfwords, LUTI2/LUTI4 with one index register, FCVTN from single precision.
+  (/^fdot\s+za/i.test(text.trim()) && !/\.b\b/i.test(text)) ||
+  /^luti[24]\s+.*zt0,\s*z/i.test(text.trim()) ||
+  /^fcvtn\s+z\d+\.h,\s*\{/i.test(text.trim())
 
 /**
  * Outside the plan in the SVE space: SVE2.2 and SVE2.3 (zeroing forms of the unary operations, FIRSTP, LASTP,
  * EXPAND, COMPACT of bytes and halfwords, FRINT32X…FRINT64Z, ADDQP, ADDSUBP, SABAL, UABAL, the widening
  * SCVTF/UCVTF and SCVTFLT/UCVTFLT, the narrowing FCVTZSN/FCVTZUN), FP8 conversions, LUTI6, FEAT_SVE_AES2
  * (multi-vector AES and PMULL/PMLAL), CPA (MADPT, MLAPT), the mixed-width FMMLA (F16F32MM, F8F16MM, F8F32MM)
- * and BFSCALE; and, until SME's phase, ADDSVL, ADDSPL and RDSVL.
+ * and BFSCALE.
  */
 function sveOther(text: string): boolean {
   const t = text.trim().toLowerCase().replace(/\s+/g, ' ')
   const m = t.split(' ')[0]!
-  if (/^(firstp|lastp|expand|addqp|addsubp|sabal|uabal|madpt|mlapt|bfscale|fcvtzsn|fcvtzun|[su]cvtflt|b?f[12]cvt(lt)?|luti6|addsvl|addspl|rdsvl|pmlal)$/.test(m)) return true
+  if (/^(firstp|lastp|expand|addqp|addsubp|sabal|uabal|madpt|mlapt|bfscale|fcvtzsn|fcvtzun|[su]cvtflt|b?f[12]cvt(lt)?|luti6|pmlal)$/.test(m)) return true
   if (/^frint(32|64)[xz] z/.test(t) || /^(bf|f)cvtn[bt]? z\d+\.b,/.test(t)) return true
   if (m !== 'movprfx' && /^\S+ z\d+\.[bhsdq], p\d+\/z, z\d+\.[bhsdq]$/.test(t)) return true
   if (m === 'compact' && /^compact z\d+\.[bh],/.test(t)) return true
@@ -73,9 +77,23 @@ function sveOther(text: string): boolean {
   return !!mm && mm[1] !== mm[2]
 }
 
+/**
+ * Outside the plan in the SME space: SME2.2 (FTMOPA and the other sparse outer products, the 4-way
+ * FMOP4A/SMOP4A family, multi-vector FMUL/BFMUL), FEAT_SME_LUTv2 (MOVT to ZT0 from a vector, LUTI4 with two
+ * index registers), LUTI6, and FP8 (any of the floating-point forms with byte elements, FMLALL, FVDOTB/T).
+ */
+function smeOther(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, ' ')
+  const m = t.split(' ')[0]!
+  if (/^(b?ftmopa|stmopa|utmopa|sutmopa|ustmopa|\w*mop4[as]|luti6|fmlall|fvdot[bt])$/.test(m)) return true
+  if (/^(fmul|bfmul|famax|famin|fscale|bfscale) \{/.test(t)) return true
+  if (/^movt zt0(\[|, z)/.test(t) || /^luti4 .*zt0, \{/.test(t)) return true
+  return /^(fdot|fvdot|fmlal|fmopa|fmops|fcvt|fcvtn|bfcvt|bfcvtn) /.test(t) && /\bz\d+\.b\b/.test(t)
+}
+
 export function outOfScope(text: string): boolean {
   const m = text.trim().split(/\s+/)[0]!.toLowerCase()
-  return OUT_OF_SCOPE.has(m) || LSUI.test(m) || OTHER.test(m) || (SIMD_OTHER.test(m) && !IN_SCOPE_FORMS(text)) || SYS_OTHER.test(text.trim().toLowerCase().replace(/\s+/g, ' ')) || sveOther(text)
+  return OUT_OF_SCOPE.has(m) || LSUI.test(m) || OTHER.test(m) || (SIMD_OTHER.test(m) && !IN_SCOPE_FORMS(text)) || SYS_OTHER.test(text.trim().toLowerCase().replace(/\s+/g, ' ')) || sveOther(text) || smeOther(text)
 }
 
 /** A system register LLVM names but we print generically (we name only the registers we implement). */

@@ -14,8 +14,8 @@ import { allInstrs, disassemble, operandsOf } from '../../src/isa/arm64/encoding
 import { extract } from '../../src/isa/arm64/encoding/pattern'
 import { ArmMachine } from '../../src/isa/arm64/cpu'
 import type { Environment, Program } from '../../src/core/isa'
-import { FPCR_ID, FPSR_ID, P0, V0, Z0 } from '../../src/isa/arm64/registers'
-import { BUF_SIZE, initialState, rng, sveState, vectorState, type NativeState, type SveState, type VectorState } from './state'
+import { FPCR_ID, FPSR_ID, P0, SVCR, V0, Z0 } from '../../src/isa/arm64/registers'
+import { BUF_SIZE, initialState, rng, sveState, vectorState, zaState, type NativeState, type SveState, type VectorState, type ZaState } from './state'
 
 /** Where the buffer sits in our machine. */
 export const SIM_BUF = 0x500000
@@ -192,6 +192,104 @@ export function sveCases(vl: number, perInstr = 6, seed = 13): NativeCase[] {
       m.step()
       if (m.outside) continue
       out.push({ group, text, word, seed: s, ptr, small, fpcr })
+      made++
+    }
+  }
+  return out
+}
+
+/* ------------------------------------------------------------------ SME, run in streaming mode with ZA */
+
+/** The SME groups; their cases run with PSTATE.SM and PSTATE.ZA set, at the CPU's streaming vector length. */
+export const SME_GROUPS = new Set(['sme', 'sme2'])
+/** SME cases get a larger buffer still: four-vector loads reach eight groups of four vectors either way. */
+export const SME_BUF = 4096
+export const SME_BASE = 2048
+/** Encodings left out: MSR SVCR changes the mode the harness relies on, and this CPU lacks MOVT. */
+const SME_SKIP = new Set(['msr-svcr', 'movt-x', 'movt-zt0'])
+
+/** The starting state of an SME case (svl in bytes). */
+export const smeInputs = (seed: number, ptr: number[], small: number[], svl: number) => ({
+  state: initialState(seed, ptr, small, SME_BUF, SME_BASE),
+  sve: sveState(seed, svl),
+  za: zaState(seed, svl),
+  fpcr: vectorState(seed).fpcr,
+})
+
+/** Set a machine to an SME case's starting state: Streaming SVE mode and ZA on, then the registers, ZA and ZT0. */
+export function applySmeState(m: ArmMachine, s: NativeState, ptr: number[], zs: SveState, za: ZaState, fpcr: number): void {
+  m.setRegister(SVCR, 3n)
+  applySveState(m, s, ptr, zs, fpcr)
+  const svl = m.svl
+  for (let r = 0; r < svl; r++) m.zaWrite(r, za.za.subarray(r * svl, (r + 1) * svl))
+  m.zt0Write(za.zt0)
+}
+
+/** Cases for the SME groups at a streaming vector length of `svl` bytes. */
+export function smeCases(svl: number, perInstr = 3, seed = 19): NativeCase[] {
+  loadTables()
+  const rand = rng(seed)
+  const out: NativeCase[] = []
+  let caseSeed = 800000
+  for (const ins of allInstrs()) {
+    const group = ins.spec.group
+    if (!SME_GROUPS.has(group) || SME_SKIP.has(ins.spec.id)) continue
+    const free = ~ins.pattern.mask >>> 0
+    let made = 0
+    for (let tries = 0; tries < perInstr * 12 && made < perInstr; tries++) {
+      const word = (ins.pattern.value | (Math.floor(rand() * 2 ** 32) & free)) >>> 0
+      const f = extract(ins.pattern, word)
+      if (ins.spec.valid && !ins.spec.valid(f)) continue
+      if (ins.spec.check?.(f)) continue
+      const text = disassemble(word, { pc: SIM_TEXT })
+      if (!text || /\b(sp|wsp|x18|w18)\b|</.test(text)) continue
+      const memoryForm = /^(ld|st)/.test(ins.spec.mnemonic)
+      const ptr = memoryForm && 'Rn' in f ? [f.Rn!] : []
+      if (ptr.length && (text.match(new RegExp(`\\b[xw]${ptr[0]}\\b`, 'g'))?.length ?? 0) > 1) continue
+      const small = memoryForm && 'Rm' in f && f.Rm !== f.Rn ? [f.Rm!] : []
+      const s = caseSeed++
+      const { state, sve, za, fpcr } = smeInputs(s, ptr, small, svl)
+      const m = new Probe(caseProgram(word, state.memory), quiet(), { settings: { svl: svl * 8 } })
+      m.size = SME_BUF
+      applySmeState(m, state, ptr, sve, za, fpcr)
+      m.step()
+      if (m.outside) continue
+      out.push({ group, text, word, seed: s, ptr, small, fpcr })
+      made++
+    }
+  }
+  return out
+}
+
+/* ------------------------------------------------------------------ the streaming-mode probe */
+
+/** Groups whose legality depends on PSTATE.SM and PSTATE.ZA. */
+export const MODE_GROUPS = new Set(['fp', 'simd', 'simdfp', 'crypto', 'vload', ...SVE_GROUPS, 'sme', 'sme2'])
+
+export interface ModeCase {
+  id: string
+  group: string
+  word: number
+}
+
+/**
+ * Sample words of every encoding in MODE_GROUPS for the probe, which runs each in the four SVCR states
+ * (MSR SVCR itself changes the state, so it is left out).
+ */
+export function modeCases(perInstr = 2, seed = 17): ModeCase[] {
+  loadTables()
+  const rand = rng(seed)
+  const out: ModeCase[] = []
+  for (const ins of allInstrs()) {
+    if (!MODE_GROUPS.has(ins.spec.group) || ins.spec.id === 'msr-svcr' || ABSENT.has(ins.spec.feature ?? '')) continue
+    const free = ~ins.pattern.mask >>> 0
+    let made = 0
+    for (let tries = 0; tries < perInstr * 12 && made < perInstr; tries++) {
+      const word = (ins.pattern.value | (Math.floor(rand() * 2 ** 32) & free)) >>> 0
+      const f = extract(ins.pattern, word)
+      if (ins.spec.valid && !ins.spec.valid(f)) continue
+      if (ins.spec.check?.(f)) continue
+      out.push({ id: ins.spec.id, group: ins.spec.group, word })
       made++
     }
   }

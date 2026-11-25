@@ -15,6 +15,11 @@ machine by `tests/arm64/native.test.ts`.
 - SVE groups: `{ vl, buf, cases: [[text, word, seed, ptr, small, signal, nzcv, regs, memory, fpcr, zregs,
   pregs, fpsr]] }`: run in streaming mode at `vl` bytes with a `buf`-byte buffer; `zregs` and `pregs` map
   changed Z and P registers to hex.
+- SME groups: `{ svl, buf, cases: [[..., zregs, pregs, fpsr, zarows, zt0]] }`: run with ZA enabled too at
+  `svl` bytes; `memory` holds runs of changed bytes as `[offset, hex]`, `zarows` maps changed ZA rows to
+  hex and `zt0` is ZT0 after (null if unchanged).
+- `streaming.json`: `{ cases: [[id, word, signals]] }`, the signal (or null) in SVCR states 0 (neither),
+  1 (SM), 2 (ZA) and 3 (both); read by `tests/arm64/streaming.test.ts`, not the replay.
 
 ## 3. Contents
 
@@ -36,8 +41,12 @@ machine by `tests/arm64/native.test.ts`.
 - `svepred.json` — predicates, compares and WHILE, in streaming mode.
 - `svefp.json` — SVE floating point and BFloat16 under random FPCR modes, in streaming mode.
 - `sveload.json` — SVE contiguous and structure loads and stores, in streaming mode.
+- `sme.json` — SME: outer products, tile moves and slices, ZA and ZT0 loads and stores, LUTI2/4.
+- `sme2.json` — SME2 and SME2.1: ZA array arithmetic, dot products and multi-vector instructions.
+- `streaming.json` — which encodings raise SIGILL in each SVCR state.
 
 ## 4. Progress
 
-Done: 3240 cases for the A64 base and 8107 for floating point, Neon and crypto, and 5555 for SVE, SVE2
-and SVE2.1 at 512 bits, all matching. Not done: SME.
+Done: 3240 cases for the A64 base and 8107 for floating point, Neon and crypto, 5555 for SVE, SVE2 and
+SVE2.1 and 2052 for SME, SME2 and SME2.1 at 512 bits, all matching; 5768 words probed in four SVCR states.
+Not done: nothing planned.

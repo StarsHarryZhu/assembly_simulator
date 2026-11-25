@@ -74,7 +74,10 @@ kind (hex, text, `.word`, `.half`, `.byte`, `.float`, `.double`).
 - `files.ts` — saving bytes or text as a browser download.
 - `RegisterPanel.vue` — all register banks in one grid with use colours, last-step highlight, details
   (a 64-bit register also shows its low 32 bits; a vector register shows lanes of a chosen size and format;
-  an SVE predicate shows its active elements).
+  an SVE predicate shows its active elements; a matrix register opens in `MatrixGrid.vue`).
+- `MatrixGrid.vue` — SME's ZA as a grid: one tile of the chosen element size or the whole array, the
+  elements the last step changed in red, pages of rows when a grid would pass 4096 cells.
+- `lanes.ts` — one lane of a vector or matrix register as hex, signed, unsigned or floating point.
 - `StackPanel.vue` — slots of the ISA's word size from the stack pointer up to the stack base, top first.
 - `MemoryPanel.vue` — data declarations, heap blocks and other written memory; rows in fixed `ch`
   columns, strings and `.space` as hex plus one character cell per byte; the "read as" choice per entry.
@@ -90,5 +93,5 @@ Done: everything listed above, checked in the browser in both languages and them
 ⌘/Ctrl-click navigation to the instruction set tab and to label and macro definitions. The paths for
 64-bit registers, vector lanes, 64-bit addresses and GNU as comments are in place (ARMv9-A phase 0) and
 checked in the browser with the AArch64 plugin (phase 1); file names use the plugin's extension (`.s`).
-SVE's Z, P and FFR registers and the vector length setting are in (phase 3). Not done: SME's ZA view
-(phase 4); GNU numeric local labels (`1:`, `1b`) are not indexed yet.
+SVE's Z, P and FFR registers and the vector length setting are in (phase 3); SME's ZA grid and ZT0 (phase
+4). Not done: GNU numeric local labels (`1:`, `1b`) are not indexed yet.

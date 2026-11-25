@@ -97,6 +97,11 @@ crypto extensions, printf and scanf of floats, and the float and simd examples; 
 the CPU. Phase 3 is done: SVE, SVE2 and SVE2.1 with a vector length chosen in the toolbar (128 to 2048
 bits), predication, first-fault loads, gathers and scatters, predicate-as-counter, the register panel's
 SVE bank and the sve example; 26741 encodings match LLVM, 5555 cases match the CPU in streaming mode at
-512 bits, and unit tests cover what streaming mode forbids. Next: phase 4 (SME, SME2, SME2.1).
+512 bits, and unit tests cover what streaming mode forbids. Phase 4 is done: SME, SME2 and SME2.1 (with
+I16I64, F64F64, B16B16 and F16F16) — SVCR and smstart/smstop, a streaming vector length chosen in the
+toolbar (512 bits by default), ZA tiles, slices and vector groups, ZT0 and LUTI2/4, the multi-vector
+instructions, which encodings each SVCR state forbids, a ZA grid in the register panel, an SME reference
+table and the sme example; 16005 encodings match LLVM, 2052 cases match the CPU with ZA, and 5768 words
+raise SIGILL in the same SVCR states as on the CPU. Next: phase 5 (polish and release).
 
 Goals: the AArch64 plugin above, then x86-64, behind the same `IsaPlugin` interface.

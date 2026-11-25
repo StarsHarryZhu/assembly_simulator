@@ -15,6 +15,7 @@ import { gprName, parseGpr, SYSREG_BY_ENC, SYSREG_BY_NAME } from '../registers'
 import { decodeBitmask, encodeBitmask } from './bitmask'
 import { fmtImm, hexAddr, unify, vaOf, type Fields, type OperandStream, type OperandType, type OpSpec } from './syntax'
 import { resolveSimd } from './simd'
+import { resolveSme } from './sme'
 import { resolveSve } from './sve'
 
 const sext = (v: number, bits: number) => (bits >= 32 ? v | 0 : (v << (32 - bits)) >> (32 - bits))
@@ -1000,6 +1001,8 @@ function resolveUncached(name: string): OpSpec {
   if (simd) return simd
   const sve = resolveSve(name)
   if (sve) return sve
+  const sme = resolveSme(name)
+  if (sme) return sme
   throw new Error(`unknown operand <${name}>`)
 }
 

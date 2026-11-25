@@ -46,5 +46,6 @@ and helpers a 64-bit ISA with vector registers needs (ARMv9-A phase 0), used by 
 `DecodedView.description` the description of a form that shares its mnemonic).
 Phase 3: plugin machine settings (`IsaPlugin.settings`, `MachineOptions`; the session keeps the values and
 restarts the program when one changes), used for AArch64's SVE vector length; `RegisterSpec.partOf` links a
-register to the wider one it is part of (v<n> in z<n>), so lists such as the calculator's demo show one name. Not done: the ZA register path
-stays unused until AArch64 phase 4.
+register to the wider one it is part of (v<n> in z<n>), so lists such as the calculator's demo show one name.
+Phase 4: matrix registers (SME's ZA, square, with interleaved tiles) and `Machine.lastRowWrites`, the rows
+a step wrote, for the register panel's grid. Not done: nothing planned.

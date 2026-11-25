@@ -22,6 +22,8 @@ export interface RegisterSpec {
   /**
    * int, float, flag and special registers hold one value (readRegister). vector, predicate and matrix
    * registers are read as bytes (readRegisterBytes): a SIMD or SVE vector, an SVE predicate, the SME ZA array.
+   * A matrix is square (n rows of n bytes); its tiles of an element size of 2^k bytes interleave its rows:
+   * there are 2^k of them, and row i of tile t is row i × 2^k + t (as in SME).
    */
   kind: 'int' | 'float' | 'flag' | 'special' | 'vector' | 'predicate' | 'matrix'
   /**
@@ -240,6 +242,8 @@ export interface Machine {
   readRegister(id: number): RegValue
   /** The bytes of a vector, predicate or matrix register, least significant first. */
   readRegisterBytes?(id: number): Uint8Array
+  /** The rows of a matrix register that the last step wrote, each with its bytes before that step. */
+  lastRowWrites?(id: number): { row: number; before: Uint8Array }[]
   registerStatus(id: number): RegStatus
   readByte(addr: number): number
   readWord(addr: number): number

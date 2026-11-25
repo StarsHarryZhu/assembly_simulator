@@ -5,13 +5,14 @@
  * - the condition codes of B.cond, CSEL, CCMP and the rest;
  * - `mrs`/`msr`: the system registers this machine keeps (registers.ts);
  * - exceptions: the classes in ESR_EL1 and where the vector table entries are (cpu.ts);
+ * - SME: the SVCR states, ZA's tiles and slices, SME2's vector groups of ZA and ZT0 (instructions/zavec.ts);
  * - every assembler directive (assembler.ts), with an example.
  * Written in our own words from what the engine does; tests check the numbers against the engine.
  */
 import { T, type Text } from '../../core/i18n'
 import type { RefRegister, RefRow, ReferenceTable } from '../../core/isa'
 import { LIBC } from './libc'
-import { EC } from './cpu'
+import { DEFAULT_SVL, EC } from './cpu'
 import { SYSREGS } from './registers'
 
 const r = (reg: string, zh: string, en: string): RefRegister => ({ reg, text: T(zh, en) })
@@ -204,7 +205,109 @@ export const EXCEPTIONS: ReferenceTable = {
         ec(EC.dataAbortLower, T('数据中止，来自 EL0（SIGSEGV / SIGBUS）', 'Data abort from EL0 (SIGSEGV / SIGBUS)'), T('读写没有内存的地址、写只读的代码或 .rodata、用户态访问内核地址，或独占、原子访问没对齐。FAR_EL1 是出错的地址；ESR 的第 6 位表示是写。', 'Accessing an address with no memory, writing code or .rodata, touching kernel addresses from EL0, or a misaligned exclusive or atomic access. FAR_EL1 holds the address; ESR bit 6 says it was a write.')),
         ec(EC.dataAbortSame, T('数据中止，在 EL1 里', 'Data abort at EL1'), T('同上，发生在内核态。', 'The same, in kernel mode.')),
         ec(EC.spAlign, T('SP 没对齐（SIGBUS）', 'SP alignment fault (SIGBUS)'), T('用 sp 作基址访存时，sp 不是 16 的倍数。', 'A load or store based on sp while sp is not a multiple of 16.')),
+        ec(EC.sme, T('SME 模式不对（SIGILL）', 'SME mode trap (SIGILL)'), T('指令需要的 SVCR 状态不对：ESR 的低 3 位是 1 时，这条指令不能在流式 SVE 模式下执行（比如大部分 Neon 和部分 SVE 指令）；是 2 时，它只能在流式模式下执行（smstart sm 之后）；是 3 时，它要先打开 ZA（smstart za）。', 'The instruction needs another SVCR state: with 1 in the low 3 bits of ESR it may not run in Streaming SVE mode (most of Neon and some SVE); with 2 it runs only in Streaming SVE mode (after smstart sm); with 3 it needs ZA enabled (smstart za).')),
         ec(EC.brk, T('断点（SIGTRAP）', 'Breakpoint (SIGTRAP)'), T('执行了 brk #imm；ESR 的低 16 位是 imm。', 'brk #imm executed; the low 16 bits of ESR hold imm.')),
+      ],
+    },
+  ],
+}
+
+/* ---------------------------------------------------------------- SME */
+
+/** ZA's rows (and bytes per row) at the default streaming vector length. */
+const ZA_ROWS = DEFAULT_SVL / 8
+const ex = (key: string, title: Text, text: Text, example?: string): RefRow => ({ ...row(key, title, text), ...(example ? { example } : {}) })
+const tileRow = (k: number, letter: string, example: string): RefRow => {
+  const n = 1 << k
+  const bits = 8 << k
+  const dim = ZA_ROWS >> k
+  if (k === 0)
+    return ex('.b', T('8 位：1 个 tile', '8-bit: 1 tile'), T(`za0.b 就是整个 ZA：SVL/8 行，每行 SVL/8 个字节（SVL 为 ${DEFAULT_SVL} 位时 ${dim} × ${dim}）。`, `za0.b is all of ZA: SVL/8 rows of SVL/8 bytes (${dim} × ${dim} when SVL is ${DEFAULT_SVL} bits).`), example)
+  return ex(
+    `.${letter}`,
+    T(`${bits} 位：${n} 个 tile`, `${bits}-bit: ${n} tiles`),
+    T(
+      `za0.${letter}–za${n - 1}.${letter}，每个 SVL/${bits} × SVL/${bits} 个元素（SVL 为 ${DEFAULT_SVL} 位时 ${dim} × ${dim}）。tile T 的第 i 行是 ZA 的第 ${n}i + T 行。`,
+      `za0.${letter}–za${n - 1}.${letter}, each SVL/${bits} × SVL/${bits} elements (${dim} × ${dim} when SVL is ${DEFAULT_SVL} bits). Row i of tile T is ZA row ${n}i + T.`,
+    ),
+    example,
+  )
+}
+
+export const SME_TABLE: ReferenceTable = {
+  id: 'sme',
+  mnemonics: ['smstart', 'smstop', 'rdsvl', 'addsvl', 'addspl', 'fmopa', 'fmops', 'bfmopa', 'bfmops', 'smopa', 'smops', 'umopa', 'umops', 'sumopa', 'sumops', 'usmopa', 'usmops', 'bmopa', 'bmops', 'mova', 'movaz', 'addha', 'addva', 'zero', 'luti2', 'luti4', 'movt'],
+  title: T('SME：流式模式、ZA 和 ZT0', 'SME: streaming mode, ZA and ZT0'),
+  intro: T(
+    `SME 加了一个方阵 ZA：SVL/8 行，每行 SVL/8 个字节（SVL 是流式向量长度，在工具栏里选，默认 ${DEFAULT_SVL} 位）。外积指令（fmopa 等）一次更新 ZA 里的一个 tile，SME2 的多向量指令把 ZA 当成一组组向量来累加。用之前要 smstart：SVCR.SM = 1 进入流式 SVE 模式，SVCR.ZA = 1 打开 ZA。寄存器面板里点 za 可以按 tile 查看。`,
+    `SME adds a square array, ZA: SVL/8 rows of SVL/8 bytes (SVL is the streaming vector length, chosen in the toolbar, ${DEFAULT_SVL} bits by default). Outer products (fmopa and the rest) update one tile of ZA at a time; SME2's multi-vector instructions treat ZA as groups of vectors to accumulate into. Start with smstart: SVCR.SM = 1 enters Streaming SVE mode and SVCR.ZA = 1 enables ZA. Click za in the register panel to see it tile by tile.`,
+  ),
+  keyTitle: T('写法', 'Form'),
+  groups: [
+    {
+      title: T('流式模式和 ZA（SVCR）', 'Streaming mode and ZA (SVCR)'),
+      rows: [
+        ex('smstart', T('SM = 1，ZA = 1', 'SM = 1, ZA = 1'), T('两个都打开，效果同下面两行。已经是 1 的位不变，也不清零。', 'Both on, with the effects of the next two rows. A bit that is already 1 stays as it is and clears nothing.'), 'smstart'),
+        ex('smstart sm', T('进入流式 SVE 模式', 'Enter Streaming SVE mode'), T('z、p、ffr 清零，FPSR 变成 0x0800009f，SVE 的向量长度换成 SVL（rdsvl 读它）。大部分 Neon 和部分 SVE 指令（gather/scatter、首次故障加载、FFR、fadda 等）在流式模式下是非法指令（SIGILL）；标量浮点、ldr/str q 等可以用。', 'z, p and ffr are zeroed, FPSR becomes 0x0800009f, and the SVE vector length becomes SVL (rdsvl reads it). Most of Neon and some of SVE (gathers and scatters, first-fault loads, FFR, fadda…) are illegal in streaming mode (SIGILL); scalar floating point, ldr/str q and a few others still run.'), 'smstart sm'),
+        ex('smstart za', T('打开 ZA', 'Enable ZA'), T('ZA 和 ZT0 清零。用到 ZA 或 ZT0 的指令要先打开它，否则是 SME 异常（SIGILL）。', 'ZA and ZT0 are zeroed. Instructions that use ZA or ZT0 need it enabled, or raise an SME exception (SIGILL).'), 'smstart za'),
+        ex('smstop', T('SM = 0，ZA = 0', 'SM = 0, ZA = 0'), T('退出流式模式（z、p、ffr 再次清零），关闭 ZA（ZA 和 ZT0 清零）。smstop sm、smstop za 只改一个。', 'Leave streaming mode (z, p and ffr are zeroed again) and disable ZA (ZA and ZT0 zeroed). smstop sm and smstop za change one bit only.'), 'smstop'),
+        ex('rdsvl', T('读 SVL', 'Read SVL'), T('rdsvl x0, #1 得到 SVL 的字节数（乘以立即数）；在哪种模式下都能用。addsvl、addspl 把它加到寄存器上。', 'rdsvl x0, #1 gives SVL in bytes (times the immediate), in any mode. addsvl and addspl add it to a register.'), 'rdsvl x0, #1'),
+      ],
+    },
+    {
+      title: T('ZA 的 tile 和切片', 'ZA tiles and slices'),
+      rows: [
+        tileRow(0, 'b', 'ld1b {za0h.b[w12, 0]}, p0/z, [x0]'),
+        tileRow(1, 'h', 'fmopa za1.h, p0/m, p1/m, z0.h, z1.h'),
+        tileRow(2, 's', 'fmopa za3.s, p0/m, p1/m, z0.s, z1.s'),
+        tileRow(3, 'd', 'fmopa za7.d, p0/m, p1/m, z0.d, z1.d'),
+        tileRow(4, 'q', 'mova z0.q, p0/m, za15h.q[w12, 0]'),
+        ex(
+          'h/v',
+          T('水平和竖直切片', 'Horizontal and vertical slices'),
+          T(
+            `za1h.s[w12, 3] 是 za1.s 的第 (w12 + 3) mod ${ZA_ROWS / 4} 行，za1v.s[w12, 3] 是它的同一列（${ZA_ROWS / 4} 是 SVL 为 ${DEFAULT_SVL} 位时 .s tile 的边长）。下标寄存器只能是 w12–w15。ld1w、st1w、mova 一次读写一个切片；同样大小的 tile 互不重叠，不同大小的会：za0.d 和 za4.d 的行都属于 za0.s。`,
+            `za1h.s[w12, 3] is row (w12 + 3) mod ${ZA_ROWS / 4} of za1.s, and za1v.s[w12, 3] the same column (${ZA_ROWS / 4} is the side of an .s tile when SVL is ${DEFAULT_SVL} bits). The index register is one of w12–w15. ld1w, st1w and mova move one slice at a time. Tiles of one size never overlap, tiles of different sizes do: the rows of za0.d and za4.d both belong to za0.s.`,
+          ),
+          'ld1w {za1h.s[w12, 3]}, p0/z, [x0]',
+        ),
+      ],
+    },
+    {
+      title: T('SME2：ZA 的向量组和 ZT0', 'SME2: vector groups of ZA, and ZT0'),
+      rows: [
+        ex(
+          'vgx',
+          T('向量组', 'Vector groups'),
+          T(
+            `za.s[w8, 1, vgx2] 把 ZA 的 ${ZA_ROWS} 行分成 2 组，每组 ${ZA_ROWS / 2} 行：指令用第 r 行和第 r + ${ZA_ROWS / 2} 行，r = (w8 + 1) mod ${ZA_ROWS / 2}。vgx4 分成 4 组：r、r + ${ZA_ROWS / 4}、r + ${ZA_ROWS / 2}、r + ${(3 * ZA_ROWS) / 4}，r = (w8 + 1) mod ${ZA_ROWS / 4}（行数按 SVL 为 ${DEFAULT_SVL} 位算）。多向量指令的第 g 个源寄存器对应第 g 组；下标寄存器只能是 w8–w11。`,
+            `za.s[w8, 1, vgx2] splits ZA's ${ZA_ROWS} rows into 2 groups of ${ZA_ROWS / 2}: the instruction uses rows r and r + ${ZA_ROWS / 2}, with r = (w8 + 1) mod ${ZA_ROWS / 2}. vgx4 makes 4 groups: r, r + ${ZA_ROWS / 4}, r + ${ZA_ROWS / 2}, r + ${(3 * ZA_ROWS) / 4}, with r = (w8 + 1) mod ${ZA_ROWS / 4} (row counts for SVL = ${DEFAULT_SVL} bits). Source register g of a multi-vector instruction goes with group g; the index register is one of w8–w11.`,
+          ),
+          'fmla za.s[w8, 1, vgx2], { z0.s, z1.s }, z4.s',
+        ),
+        ex(
+          '0:1',
+          T('加宽的结果', 'Widening results'),
+          T(
+            '结果元素比源元素宽 2 倍（或 4 倍）时，每组用相邻的 2（或 4）行：smlal za.s[w8, 0:1], z0.h, z1.h 里 r = w8 mod 组的行数，再向下取到 2 的倍数；源的第 k 个元素进第 k mod 2 行。',
+            'When results are 2 (or 4) times wider than the sources, each group uses 2 (or 4) adjacent rows: in smlal za.s[w8, 0:1], z0.h, z1.h, r = w8 mod the rows per group, rounded down to a multiple of 2; source element k goes to row k mod 2 of them.',
+          ),
+          'smlal za.s[w8, 0:1], z0.h, z1.h',
+        ),
+        ex(
+          'zt0',
+          T('查表寄存器 ZT0', 'The lookup table ZT0'),
+          T(
+            '512 位。luti2 / luti4 把它看成 16 个 32 位表项：Zn 里每 2（或 4）位是一个下标，结果元素取那个表项的低位；方括号里的数选 Zn 的哪一段下标。ldr zt0、str zt0 整个读写它，smstart za 和 smstop za 把它清零。',
+            '512 bits. luti2 / luti4 read it as 16 entries of 32 bits: every 2 (or 4) bits of Zn is an index, and each result element is the low bits of that entry; the number in brackets picks which run of indexes in Zn. ldr zt0 and str zt0 move all of it; smstart za and smstop za zero it.',
+          ),
+          'luti2 z0.b, zt0, z1[0]',
+        ),
+        ex(
+          'fp',
+          T('浮点结果写进 ZA', 'Floating-point results in ZA'),
+          T('写 ZA 的浮点指令总是给出默认 NaN（不传递 NaN 的内容），也不置 FPSR 的异常标志；舍入方式仍按 FPCR。写 z 寄存器的 SME2 指令照常。', 'Floating-point instructions that write ZA always give the default NaN (no NaN payload is passed on) and set no FPSR exception flags; the rounding mode still comes from FPCR. SME2 instructions that write z registers behave as usual.'),
+        ),
       ],
     },
   ],
@@ -285,4 +388,4 @@ export const DIRECTIVES_TABLE: ReferenceTable = {
   ],
 }
 
-export const REFERENCES: ReferenceTable[] = [SYSCALLS_TABLE, LIBC_TABLE, CONDITIONS, SYSREG_TABLE, EXCEPTIONS, DIRECTIVES_TABLE]
+export const REFERENCES: ReferenceTable[] = [SYSCALLS_TABLE, LIBC_TABLE, CONDITIONS, SYSREG_TABLE, EXCEPTIONS, SME_TABLE, DIRECTIVES_TABLE]

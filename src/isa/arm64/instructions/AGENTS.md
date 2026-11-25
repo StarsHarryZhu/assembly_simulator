@@ -15,6 +15,12 @@ operand template, description in both languages and its semantics against the `C
 - SVE semantics take the vector length from `Cpu.vl` and never assume 128 bits; Z and P registers go
   through `zvec.ts`. BFloat16 forms keep their halfword elements apart from the format index (`storage`
   in `sve-fp.ts`).
+- SME semantics reach ZA and ZT0 only through `zavec.ts` and `Cpu` (`zaRead`, `zaWrite`, `zt0Read`,
+  `zt0Write`), with the streaming vector length `Cpu.svl`. Floating-point results that go to ZA use
+  `zaEnv` (default NaN, no FPSR flags). Multi-vector instructions read every source before writing any
+  result, since destinations may overlap sources (as the M5 does).
+- Each encoding's `needs` says which SVCR state it requires; `streaming.ts` marks the FP, Neon and SVE
+  encodings, the SME files mark their own; `tests/arm64/streaming.test.ts` checks them against the M5.
 
 ## 3. Contents
 
@@ -39,9 +45,15 @@ operand template, description in both languages and its semantics against the `C
 - `sve-fp.ts` — SVE floating point and the B16B16 BFloat16 forms, FTMAD/FEXPA helpers, FP SVE2 and SVE2.1.
 - `sve-ldst.ts` — SVE loads and stores: contiguous, replicating, structures, first-fault and non-fault, gathers, scatters, prefetches.
 - `sve2.ts` — SVE2 and SVE2.1 integer: widening and narrowing, saturating and complex arithmetic, dot and matrix products, bit permutes, histograms, crypto, quadword reductions.
+- `zavec.ts` — SME helpers: ZA rows as elements, tiles and their slices, the array vectors of a vector group, `zaEnv`.
+- `sme.ts` — SME: SMSTART/SMSTOP and RDSVL, outer products, ADDHA/ADDVA, MOVA and MOVAZ, slice loads and stores, LDR/STR of ZA and ZT0, ZERO, MOVT, LUTI2/LUTI4.
+- `sme2.ts` — SME2 and SME2.1 arithmetic into ZA's array vectors: add, multiply-add, widening multiply-add, dot and vertical dot products.
+- `sme2-vec.ts` — SME2 and SME2.1 multi-vector instructions on z registers: max/min, shifts, clamps, ZIP/UZP, conversions, saturating and shifting narrows, unpacks, SEL, multi-vector loads and stores.
+- `streaming.ts` — which FP, Neon and SVE encodings Streaming SVE mode forbids (as measured on the M5).
 - `index.ts` — loads every table once.
 
 ## 4. Progress
 
 Done: the A64 base for phase 1; scalar floating point, all of Neon and the crypto extensions for phase 2;
-SVE, SVE2 and SVE2.1 for phase 3 (every form LLVM knows in the plan's scope). Not done: SME (phase 4).
+SVE, SVE2 and SVE2.1 for phase 3; SME, SME2 and SME2.1 with I16I64, F64F64, B16B16 and F16F16 for phase 4
+(every form LLVM knows in the plan's scope; FP8, SME2.2 and LUTv2 are out of it). Not done: nothing planned.

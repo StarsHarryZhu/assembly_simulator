@@ -13,7 +13,7 @@ import { mixColumns, rol, SBOXES, shiftRows, sm4Rounds } from './crypto'
 import { highBit } from '../encoding/sve'
 import { bin, sizes, tshAmount } from './sve-int'
 import type { Cpu, Fields } from './types'
-import { ESIZE, maskEs, polyMul, sat, shiftReg, sx, ux } from './vec'
+import { ESIZE, maskEs, polyMul, sat, shiftReg, shiftSve, sx, ux } from './vec'
 import { pget, predicated, predTest, pset, zget, zset } from './zvec'
 import * as sf from '../softfloat'
 
@@ -97,17 +97,6 @@ for (const [m, op] of [
     },
   })
 
-/**
- * SVE2's shifts by vector take the whole signed element as the shift, clamped to ±(esize + 1) (Arm's
- * ShiftSat), where Neon reads only its low byte.
- */
-function shiftSve(a: bigint, b: bigint, es: number, unsigned: boolean, round: boolean, saturate: boolean): bigint {
-  const lim = ESN(es) + 1n
-  let sh = sx(b, es)
-  if (sh > lim) sh = lim
-  if (sh < -lim) sh = -lim
-  return shiftReg(a, sh, es, unsigned, round, saturate)[0]
-}
 
 // Shifts by vector: bits 19:16 = Q (saturate), N (reversed operands), R (round), U.
 for (let q = 0; q < 2; q++)

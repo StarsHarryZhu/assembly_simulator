@@ -38,7 +38,8 @@ build until all of them are done.
 - `decoder.ts` — a word as named bit fields (with titles for the common field names), text and notes.
 - `calc.ts` — one line on its own for the instruction set tab, with demo inputs.
 - `format.ts` — the editor's Format command in the examples' layout.
-- `references.ts` — system calls, C library, condition codes, system registers, exceptions, directives.
+- `references.ts` — system calls, C library, condition codes, system registers, exceptions, SME (modes,
+  ZA tiles and vector groups, ZT0), directives.
 - `encoding` — bit patterns, operand syntax and the instruction table.
 - `instructions` — the instruction definitions by class, with their semantics.
 - `examples` — example programs (Chinese comments; `en` has the English copies).
@@ -63,5 +64,12 @@ form LLVM knows decodes and assembles as it does (300k random words across the S
 cases match this Mac's CPU in streaming mode at 512 bits, and what streaming mode forbids is checked by unit
 tests against the Neon equivalents or the architecture's description. FTMAD's coefficients are the
 architecture's constants; FEXPA's table is computed (2^(i/64) rounded) and equals the architecture's.
+Phase 4: SME, SME2 and SME2.1 with I16I64, F64F64, B16B16 and F16F16 — SVCR, smstart/smstop and the
+streaming vector length (128 to 2048 bits, 512 by default; `SMCR_EL1` can shorten it), ZA with its tiles,
+slices and vector groups, ZT0, LUTI2/4, the multi-vector instructions, SME exceptions for the wrong SVCR
+state, the ZA grid in the register panel, the SME reference table and the sme example. 16005 encodings
+match LLVM both ways (and 2.2 million surveyed words agree, apart from the extensions out of scope), 2052
+cases match this Mac's CPU with ZA enabled, and the SVCR states that forbid each FP, Neon, SVE and SME
+encoding match it too (MOVT, which it lacks, is left to the architecture's description).
 
-Not done: phases 4–5 (SME, polish and release).
+Not done: phase 5 (polish and release).

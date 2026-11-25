@@ -72,6 +72,18 @@ export function shiftReg(a: bigint, b: bigint, es: number, unsigned: boolean, ro
   return [ux(v, es), false]
 }
 
+/**
+ * SVE2's and SME2's shifts by vector take the whole signed element as the shift, clamped to ±(esize + 1)
+ * (Arm's ShiftSat), where Neon reads only its low byte.
+ */
+export function shiftSve(a: bigint, b: bigint, es: number, unsigned: boolean, round: boolean, saturate: boolean): bigint {
+  const lim = BigInt(ESIZE[es]! + 1)
+  let sh = sx(b, es)
+  if (sh > lim) sh = lim
+  if (sh < -lim) sh = -lim
+  return shiftReg(a, sh, es, unsigned, round, saturate)[0]
+}
+
 /** Polynomial multiply over GF(2) of two `bits`-bit values (PMUL, PMULL). */
 export function polyMul(a: bigint, b: bigint, bits: number): bigint {
   let r = 0n

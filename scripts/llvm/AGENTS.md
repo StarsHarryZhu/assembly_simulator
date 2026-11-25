@@ -12,12 +12,13 @@ objdump, drawn from our own instruction table, plus handwritten assembly lines a
 
 ## 3. Contents
 
-- `cases.ts` — random words per encoding and per instruction class, and every SYS word of DC/IC/AT/TLBI.
+- `cases.ts` — random words per encoding and per instruction class (with a word count per class), and
+  every SYS word of DC/IC/AT/TLBI.
 - `asm` — handwritten lines for the assembler direction (aliases, immediates, refusals).
 - `programs` — whole programs compared section by section (literal pools, data, macros).
 
 ## 4. Progress
 
 Done: the base A64 classes and SIMD&FP (scalar FP, Neon, crypto, vector loads and stores); SVE, SVE2 and
-SVE2.1 per encoding and across the SVE class, and SVE's condition names in `asm/base.s`. Not done: SME cases
-(phase 4).
+SVE2.1 per encoding and across the SVE class, and SVE's condition names in `asm/base.s`; SME, SME2 and
+SME2.1 per encoding and across the SME class (phase 4). Not done: nothing planned.

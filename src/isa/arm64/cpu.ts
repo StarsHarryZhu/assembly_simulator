@@ -13,7 +13,7 @@ import type { Environment, HaltReason, InputRequest, Machine, MachineOptions, Ma
 import { IDLE, READ, WRITTEN } from '../../core/isa'
 import { addrOf, hex16, vaOf } from '../../core/format'
 import { WideMemory } from '../../core/memory'
-import { decodeWord, disassemble, type Exec } from './encoding/table'
+import { decodeWord, disassemble, NEED, needsOf, type Exec } from './encoding/table'
 import { loadTables } from './instructions/index'
 import { ACC, type Cpu, type Fields } from './instructions/types'
 import { KERNEL_LIMIT, KTEXT_BASE, TEXT_BASE } from './assembler'
@@ -55,16 +55,20 @@ import {
   PC,
   REGISTER_COUNT,
   SP,
+  SMCR_EL1,
   SP_EL0,
   SP_EL1,
   SPSEL,
   SPSR_EL1,
+  SVCR,
   SYSREG_BY_ENC,
   SYSREG_BY_NAME,
   V0,
   VBAR_EL1,
   Z0,
+  ZA,
   ZCR_EL1,
+  ZT0,
 } from './registers'
 
 loadTables()
@@ -85,6 +89,7 @@ export const EC = {
   dataAbortLower: 0x24,
   dataAbortSame: 0x25,
   spAlign: 0x26,
+  sme: 0x1d,
   brk: 0x3c,
 } as const
 
@@ -130,12 +135,15 @@ const FIXED_SYSREGS: Record<string, bigint> = {
   // LSE2 (unaligned atomics within 16 bytes).
   ID_AA64MMFR2_EL1: 0x0000_0001_0000_0000n,
   ID_AA64DFR0_EL1: 0x0000_0000_0000_0006n,
+  SMIDR_EL1: 0n,
 }
 
 interface Slot {
   exec: Exec
   fields: Fields
   line: number
+  /** NEED bits of the instruction. */
+  needs: number
 }
 
 /** One step's undo record. Records are recycled from a ring, so their arrays are reused. */
@@ -154,6 +162,14 @@ class StepLog {
   memSize: number[] = []
   memOld: bigint[] = []
   reads: number[] = []
+  /** ZA rows written (row number, old bytes), in order. */
+  zaRows: number[] = []
+  zaOld: Uint8Array[] = []
+  /** The vector, predicate, ZA and ZT0 storage before a change of PSTATE.SM or PSTATE.ZA cleared it. */
+  vecSnap: Uint8Array | null = null
+  predSnap: Uint8Array | null = null
+  zaSnap: Uint8Array | null = null
+  ztSnap: Uint8Array | null = null
   output = ''
   sleep = 0
   reset(pc: number) {
@@ -166,6 +182,9 @@ class StepLog {
     this.memSize.length = 0
     this.memOld.length = 0
     this.reads.length = 0
+    this.zaRows.length = 0
+    this.zaOld.length = 0
+    this.vecSnap = this.predSnap = this.zaSnap = this.ztSnap = null
     this.output = ''
     this.sleep = 0
   }
@@ -178,8 +197,25 @@ const VMAX = 256
 const PMAX = VMAX / 8
 /** The SVE vector length when the settings do not choose one, in bits. */
 export const DEFAULT_VL = 256
+/** The streaming vector length (SVL) when the settings do not choose one, in bits (this Mac's M5 has 512). */
+export const DEFAULT_SVL = 512
+/** FPSR after entering or leaving Streaming SVE mode. */
+const FPSR_STREAMING = 0x0800009f
 /** FPSR.QC, the cumulative saturation bit. */
 const QC = 1 << 27
+
+/** Bytes as a little-endian number, and back. */
+function bigOf(bytes: Uint8Array): bigint {
+  let v = 0n
+  for (let i = bytes.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]!)
+  return v
+}
+function storeBig(bytes: Uint8Array, v: bigint): void {
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = Number(v & 0xffn)
+    v >>= 8n
+  }
+}
 
 export class ArmMachine implements Machine, Cpu, Host {
   readonly program: Program
@@ -200,8 +236,21 @@ export class ArmMachine implements Machine, Cpu, Host {
   private pr = new Uint8Array(17 * PMAX)
   /** The largest vector length the settings allow, in bytes. */
   private maxVl = DEFAULT_VL / 8
-  /** The current vector length in bytes: maxVl, or less when ZCR_EL1.LEN asks for less. */
+  /** The non-streaming vector length in bytes: maxVl, or less when ZCR_EL1.LEN asks for less. */
+  private nsvl = DEFAULT_VL / 8
+  /** The largest streaming vector length the settings allow, in bytes; also the stride of ZA's rows. */
+  private maxSvl = DEFAULT_SVL / 8
+  /** The streaming vector length in bytes: maxSvl, or less when SMCR_EL1.LEN asks for less. */
+  private svlen = DEFAULT_SVL / 8
+  /** The vector length in effect, in bytes: svlen in Streaming SVE mode, nsvl otherwise. */
   private vlen = DEFAULT_VL / 8
+  /** PSTATE.SM and PSTATE.ZA. */
+  private smv = 0
+  private zav = 0
+  /** The ZA array: svlen rows of svlen bytes, each row maxSvl bytes apart. */
+  private za = new Uint8Array((DEFAULT_SVL / 8) ** 2)
+  /** ZT0, 64 bytes. */
+  private zt = new Uint8Array(64)
   private fpcrv = 0
   private fpsrv = 0
   private mem = new WideMemory()
@@ -247,14 +296,16 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.env = env
     const bits = options?.settings?.vl ?? DEFAULT_VL
     this.maxVl = Math.max(16, Math.min(VMAX, 2 ** Math.floor(Math.log2(bits / 8))))
-    this.vlen = this.maxVl
+    const sbits = options?.settings?.svl ?? DEFAULT_SVL
+    this.maxSvl = Math.max(16, Math.min(VMAX, 2 ** Math.floor(Math.log2(sbits / 8))))
+    this.za = new Uint8Array(this.maxSvl * this.maxSvl)
     const ins = program.instructions
     this.textStart = ins.find((i) => i.addr < TOP)?.addr ?? TEXT_BASE
     if (this.textStart > TEXT_BASE) this.textStart = TEXT_BASE
     for (const i of ins) {
       this.byAddr.set(i.addr, i)
       const d = decodeWord(i.word)
-      const slot: Slot = d ? { exec: d.instr.spec.exec, fields: d.fields, line: i.line } : { exec: (c) => c.undefinedInstr(), fields: {}, line: i.line }
+      const slot: Slot = d ? { exec: d.instr.spec.exec, fields: d.fields, line: i.line, needs: needsOf(d.instr.spec, d.fields) } : { exec: (c) => c.undefinedInstr(), fields: {}, line: i.line, needs: 0 }
       if (i.addr >= TOP) {
         this.ktext[(i.addr - KTEXT_BASE) / 4] = slot
         this.ktextEnd = Math.max(this.ktextEnd, i.addr + 4)
@@ -280,8 +331,14 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.sys = new Array(REGISTER_COUNT - SYS_OFFSET).fill(0n)
     this.vr.fill(0)
     this.pr.fill(0)
-    this.vlen = this.maxVl
+    this.za.fill(0)
+    this.zt.fill(0)
+    this.smv = 0
+    this.zav = 0
+    this.nsvl = this.vlen = this.maxVl
+    this.svlen = this.maxSvl
     this.sys[ZCR_EL1 - SYS_OFFSET] = 15n
+    this.sys[SMCR_EL1 - SYS_OFFSET] = 15n
     this.fpcrv = 0
     this.fpsrv = 0
     this.sp1 = vaOf(KSTACK_TOP)
@@ -420,7 +477,10 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.nextPc = pc + 4
     try {
       const slot = this.slotAt(pc)
-      if (slot && (pc < TOP || this.elv === 1)) slot.exec(this, slot.fields)
+      if (slot && (pc < TOP || this.elv === 1)) {
+        if (slot.needs) this.checkMode(slot.needs)
+        slot.exec(this, slot.fields)
+      }
       else if (this.isStub(pc)) this.callStub(pc)
       else this.fetchFault(pc)
       // A branch into the C library runs the function as part of the same step (and a function that
@@ -573,6 +633,11 @@ export class ArmMachine implements Machine, Cpu, Host {
       }
     }
     for (let i = log.regIds.length - 1; i >= 0; i--) this.setRawReg(log.regIds[i]!, log.regOld[i]!)
+    for (let i = log.zaRows.length - 1; i >= 0; i--) this.za.set(log.zaOld[i]!, log.zaRows[i]! * this.maxSvl)
+    if (log.vecSnap) this.vr.set(log.vecSnap)
+    if (log.predSnap) this.pr.set(log.predSnap)
+    if (log.zaSnap) this.za.set(log.zaSnap)
+    if (log.ztSnap) this.zt.set(log.ztSnap)
     for (let i = log.statusIds.length - 1; i >= 0; i--) this.status[log.statusIds[i]!] = log.statusOld[i]!
     this.os = log.os
     this.monitor = log.monitor
@@ -589,7 +654,25 @@ export class ArmMachine implements Machine, Cpu, Host {
     if (id >= V0 && id < V0 + 32) return this.vr.slice((id - V0) * VMAX, (id - V0) * VMAX + 16)
     if (id >= Z0 && id < Z0 + 32) return this.vr.slice((id - Z0) * VMAX, (id - Z0) * VMAX + this.vlen)
     if (id >= P0 && id <= FFR) return this.pr.slice((id - P0) * PMAX, (id - P0) * PMAX + this.vlen / 8)
+    if (id === ZT0) return this.zt.slice()
+    if (id === ZA) {
+      const out = new Uint8Array(this.svlen * this.svlen)
+      for (let r = 0; r < this.svlen; r++) out.set(this.za.subarray(r * this.maxSvl, r * this.maxSvl + this.svlen), r * this.svlen)
+      return out
+    }
     return new Uint8Array(0)
+  }
+
+  lastRowWrites(id: number): { row: number; before: Uint8Array }[] {
+    if (id !== ZA || this.ringCount === 0) return []
+    const log = this.ring[(this.ringHead + this.ringCount - 1) % UNDO_LIMIT]!
+    const out = new Map<number, Uint8Array>()
+    // Enabling or disabling ZA cleared all of it; otherwise the rows written, the first old value of each.
+    if (log.zaSnap) for (let r = 0; r < this.svlen; r++) out.set(r, log.zaSnap.slice(r * this.maxSvl, r * this.maxSvl + this.svlen))
+    log.zaRows.forEach((r, i) => {
+      if (!out.has(r)) out.set(r, log.zaOld[i]!)
+    })
+    return [...out].map(([row, before]) => ({ row, before }))
   }
 
   registerStatus(id: number): RegStatus {
@@ -635,6 +718,8 @@ export class ArmMachine implements Machine, Cpu, Host {
     if (id >= V0 && id < V0 + 32) return this.vbig(id - V0, this.vlen)
     if (id >= Z0 && id < Z0 + 32) return this.vbig(id - Z0, this.vlen)
     if (id >= P0 && id <= FFR) return this.pbig(id - P0)
+    if (id === ZT0) return bigOf(this.zt)
+    if (id === ZA) return 0n
     if (id === SP) return this.elv && this.spsel ? this.sp1 : this.sp0
     if (id === PC) return vaOf(this.pcReg)
     if (id <= FLAG_V) return (this.nzcv >> (FLAG_V - id)) & 1
@@ -647,6 +732,8 @@ export class ArmMachine implements Machine, Cpu, Host {
     else if (id >= V0 && id < V0 + 32) this.vstore(id - V0, this.vlen, BigInt(v))
     else if (id >= Z0 && id < Z0 + 32) this.vstore(id - Z0, this.vlen, BigInt(v))
     else if (id >= P0 && id <= FFR) this.pstore(id - P0, BigInt(v))
+    else if (id === ZT0) storeBig(this.zt, BigInt(v))
+    else if (id === ZA) return
     else if (id === SP) {
       if (this.elv && this.spsel) this.sp1 = BigInt.asUintN(64, BigInt(v))
       else this.sp0 = BigInt.asUintN(64, BigInt(v))
@@ -677,6 +764,8 @@ export class ArmMachine implements Machine, Cpu, Host {
         return BigInt(this.fpcrv)
       case FPSR_ID:
         return BigInt(this.fpsrv)
+      case SVCR:
+        return BigInt(this.smv | (this.zav << 1))
     }
     return this.sys[id - SYS_OFFSET] ?? 0n
   }
@@ -711,9 +800,23 @@ export class ArmMachine implements Machine, Cpu, Host {
         // The vector length becomes the largest power of two up to (LEN + 1) × 128 bits that the machine has.
         const len = Number(v & 15n)
         this.sys[id - SYS_OFFSET] = BigInt(len)
-        this.vlen = Math.min(this.maxVl, 2 ** Math.floor(Math.log2(len + 1)) * 16)
+        this.nsvl = Math.min(this.maxVl, 2 ** Math.floor(Math.log2(len + 1)) * 16)
+        if (!this.smv) this.vlen = this.nsvl
         return
       }
+      case SMCR_EL1: {
+        const len = Number(v & 15n)
+        this.sys[id - SYS_OFFSET] = BigInt(len)
+        this.svlen = Math.min(this.maxSvl, 2 ** Math.floor(Math.log2(len + 1)) * 16)
+        if (this.smv) this.vlen = this.svlen
+        return
+      }
+      case SVCR:
+        // Only the bits; setSvcr does what a change of mode does to the registers.
+        this.smv = Number(v & 1n)
+        this.zav = Number((v >> 1n) & 1n)
+        this.vlen = this.smv ? this.svlen : this.nsvl
+        return
     }
     this.sys[id - SYS_OFFSET] = v
   }
@@ -776,6 +879,28 @@ export class ArmMachine implements Machine, Cpu, Host {
 
   get vl(): number {
     return this.vlen
+  }
+  get svl(): number {
+    return this.svlen
+  }
+  zaRead(r: number): Uint8Array {
+    this.markRead(ZA)
+    return this.za.slice(r * this.maxSvl, r * this.maxSvl + this.svlen)
+  }
+  zaWrite(r: number, data: Uint8Array): void {
+    const log = this.log
+    if (!log.regIds.includes(ZA)) this.markWrite(ZA, 0n)
+    log.zaRows.push(r)
+    log.zaOld.push(this.za.slice(r * this.maxSvl, r * this.maxSvl + this.svlen))
+    this.za.set(data.subarray(0, this.svlen), r * this.maxSvl)
+  }
+  zt0Read(): Uint8Array {
+    this.markRead(ZT0)
+    return this.zt.slice()
+  }
+  zt0Write(data: Uint8Array): void {
+    this.markWrite(ZT0, bigOf(this.zt))
+    this.zt.set(data.subarray(0, 64))
   }
   pread(n: number): Uint8Array {
     this.markRead(P0 + n)
@@ -1101,6 +1226,17 @@ export class ArmMachine implements Machine, Cpu, Host {
     if (!def || def.writeEl === null || this.elv < def.writeEl) return this.undefinedInstr()
     if (def.id === NZCV_SYS) return this.setFlags(Number((v >> 28n) & 15n))
     if (def.id === CURRENT_EL) return this.undefinedInstr()
+    if (def.id === SVCR) return this.setSvcr(Number(v & 1n), Number((v >> 1n) & 1n))
+    if (def.id === SMCR_EL1) {
+      // A new streaming vector length leaves ZA, ZT0 and (in Streaming SVE mode) Z and P unknown: zero here.
+      const before = this.svlen
+      this.writeSys(def.id, v)
+      if (this.svlen !== before) {
+        if (this.zav) this.clearZa()
+        if (this.smv) this.clearVectors()
+      }
+      return
+    }
     this.writeSys(def.id, v)
   }
 
@@ -1116,8 +1252,61 @@ export class ArmMachine implements Machine, Cpu, Host {
       const next = op2 === 6 ? now | BigInt(crm) : now & ~BigInt(crm)
       return this.writeSys(DAIF, next << 6n)
     }
+    if (op1 === 3 && op2 === 3) {
+      // SMSTART / SMSTOP: CRm<2:1> picks SM, ZA or both, CRm<0> the new value.
+      const sm = crm & 2 ? crm & 1 : this.smv
+      const za = crm & 4 ? crm & 1 : this.zav
+      return this.setSvcr(sm, za)
+    }
     if (op1 === 0 && (op2 === 3 || op2 === 4) && this.elv === 0) this.undefinedInstr()
     // UAO, PAN, DIT, SSBS: no effect on this machine.
+  }
+
+  /**
+   * Change PSTATE.SM and PSTATE.ZA. Entering or leaving Streaming SVE mode zeroes Z, P and FFR and sets FPSR
+   * to 0x0800009f; enabling or disabling ZA zeroes ZA and ZT0. Setting a bit to its current value does nothing.
+   */
+  private setSvcr(sm: number, za: number): void {
+    const smChange = sm !== this.smv
+    const zaChange = za !== this.zav
+    if (!smChange && !zaChange) return
+    if (smChange) this.clearVectors()
+    if (zaChange) this.clearZa()
+    this.writeSys(SVCR, BigInt(sm | (za << 1)))
+    if (smChange) this.writeSys(FPSR_ID, BigInt(FPSR_STREAMING))
+  }
+
+  /** Zero every Z, P and FFR register (logged for undo before the mode that sets their length changes). */
+  private clearVectors(): void {
+    const log = this.log
+    log.vecSnap ??= this.vr.slice()
+    log.predSnap ??= this.pr.slice()
+    for (let n = 0; n < 32; n++) this.markWrite(V0 + n, this.vbig(n, this.vlen))
+    for (let n = 0; n <= 16; n++) this.markWrite(P0 + n, this.pbig(n))
+    this.vr.fill(0)
+    this.pr.fill(0)
+  }
+
+  /** Zero ZA and ZT0 (logged for undo). */
+  private clearZa(): void {
+    const log = this.log
+    log.zaSnap ??= this.za.slice()
+    log.ztSnap ??= this.zt.slice()
+    this.markWrite(ZA, 0n)
+    this.markWrite(ZT0, bigOf(this.zt))
+    this.za.fill(0)
+    this.zt.fill(0)
+  }
+
+  /** Refuse an instruction that PSTATE.SM or PSTATE.ZA does not allow, as an SME exception (Linux: SIGILL). */
+  private checkMode(needs: number): void {
+    const text = this.byAddr.get(this.pc)?.basic || hex16(vaOf(this.pc))
+    const fail = (smtc: number, zh: string, en: string): never => {
+      throw new ArmFault('sigill', L(`非法指令（SIGILL）：${text} ${zh}`, `Illegal instruction (SIGILL): ${text} ${en}`), EC.sme, smtc, null)
+    }
+    if (needs & NEED.streaming && !this.smv) fail(2, '只能在流式 SVE 模式下执行，先用 smstart 进入', 'runs only in Streaming SVE mode; enter it with smstart first')
+    if (needs & NEED.nonStreaming && this.smv) fail(1, '在流式 SVE 模式下不能执行（这台机器和 M5 一样没有 FEAT_SME_FA64），先用 smstop 退出', 'cannot run in Streaming SVE mode (this machine, like the M5, lacks FEAT_SME_FA64); leave it with smstop first')
+    if (needs & (NEED.za | NEED.zt0) && !this.zav) fail(3, '要用 ZA，先用 smstart za 打开', 'uses ZA; enable it with smstart za first')
   }
 
   sysOp(op1: number, crn: number, crm: number, op2: number, rt: number): void {

@@ -3,39 +3,48 @@
  * silicon Mac): every case starts from the state its seed gives (and the FPCR it records), runs one
  * instruction in our machine, and must end with the same general and vector registers, NZCV, FPSR and
  * buffer bytes, or fault where the CPU faulted. SVE fixtures (with `vl`) ran in streaming mode at that vector
- * length and compare the Z and P registers instead of V.
+ * length and compare the Z and P registers instead of V; SME fixtures (with `svl`) ran with ZA enabled too
+ * and also compare ZA and ZT0. streaming.json is the mode probe (tests/arm64/streaming.test.ts).
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ArmMachine } from '../../src/isa/arm64/cpu'
-import { applySveState, applyState, caseProgram, SIM_BUF, sveInputs } from '../../scripts/native/cases'
+import { applySmeState, applySveState, applyState, caseProgram, SIM_BUF, smeInputs, sveInputs } from '../../scripts/native/cases'
 import { BUF_SIZE, initialState, vectorState } from '../../scripts/native/state'
-import { FPSR_ID, P0, V0, Z0 } from '../../src/isa/arm64/registers'
+import { FPSR_ID, P0, V0, Z0, ZA, ZT0 } from '../../src/isa/arm64/registers'
 import { ConsoleEnv } from '../helpers'
+import type { MachineOptions } from '../../src/core/isa'
 
 type Row = [string, string, number, number[], number[], string | null, number, Record<string, string>, [number, number][], number, Record<string, string>, number]
 /** An SVE row has the Z registers where Row has V, then the predicates, then FPSR. */
-type SveRow = [...Row, number?]
+type SveRow = [...Row, number?, Record<string, string>?, (string | null)?]
+/** Memory changes: `[offset, byte]`, or in SME fixtures `[offset, hex]` runs. */
+type Change = [number, number | string]
 
 const DIR = join(__dirname, 'golden', 'native')
 /** As in scripts/native/harness.c: how far from the buffer a pointer is still shown as an offset. */
 const NEAR = 0x10000n
 
 describe('behaviour matches the CPU', () => {
-  for (const file of readdirSync(DIR).filter((f) => f.endsWith('.json'))) {
+  for (const file of readdirSync(DIR).filter((f) => f.endsWith('.json') && f !== 'streaming.json')) {
     it(file.replace('.json', ''), () => {
-      const { cases, vl } = JSON.parse(readFileSync(join(DIR, file), 'utf8')) as { cases: Row[]; vl?: number }
+      const fixture = JSON.parse(readFileSync(join(DIR, file), 'utf8')) as { cases: Row[]; vl?: number; svl?: number }
+      const { cases, svl } = fixture
+      const vl = fixture.vl ?? svl
       const problems: string[] = []
-      for (const [text, word, seed, ptr, small, signal, nzcv, regs, memory, fpcr, vregs, fpsr, pregs] of cases as SveRow[]) {
-        // SVE rows: [.., fpcr, zregs, pregs, fpsr]; the others: [.., fpcr, vregs, fpsr].
+      for (const [text, word, seed, ptr, small, signal, nzcv, regs, memory, fpcr, vregs, fpsr, pregs, zaRows, zt0] of cases as SveRow[]) {
+        // SVE and SME rows: [.., fpcr, zregs, pregs, fpsr(, zarows, zt0)]; the others: [.., fpcr, vregs, fpsr].
         const sveFpsr = vl ? (pregs as unknown as number) : fpsr
         const zp = vl ? (fpsr as unknown as Record<string, string>) : {}
-        const inputs = vl ? sveInputs(seed, ptr, small, vl) : null
+        const sme = svl ? smeInputs(seed, ptr, small, svl) : null
+        const inputs = sme ?? (vl ? sveInputs(seed, ptr, small, vl) : null)
         const s = inputs ? inputs.state : initialState(seed, ptr, small)
         const vs = vectorState(seed)
-        const m = new ArmMachine(caseProgram(Number(word), s.memory), new ConsoleEnv(), vl ? { settings: { vl: vl * 8 } } : undefined)
-        if (inputs) applySveState(m, s, ptr, inputs.sve, fpcr)
+        const settings: MachineOptions | undefined = svl ? { settings: { svl: svl * 8 } } : vl ? { settings: { vl: vl * 8 } } : undefined
+        const m = new ArmMachine(caseProgram(Number(word), s.memory), new ConsoleEnv(), settings)
+        if (sme) applySmeState(m, s, ptr, sme.sve, sme.za, fpcr)
+        else if (inputs) applySveState(m, s, ptr, inputs.sve, fpcr)
         else applyState(m, s, ptr, vs, fpcr)
         m.step()
         const halt = m.halted
@@ -77,9 +86,25 @@ describe('behaviour matches the CPU', () => {
             const got = BigInt(m.readRegister(V0 + n)).toString(16)
             if (got !== want) problems.push(`${text} (seed ${seed})${fpcrNote}: v${n} = ${got.padStart(32, '0')}, the CPU ${want.padStart(32, '0')}`)
           }
+        if (sme) {
+          const hex = (b: Uint8Array) => BigInt('0x' + [...b].reverse().map((x) => x.toString(16).padStart(2, '0')).join('')).toString(16)
+          const za = m.readRegisterBytes(ZA)
+          for (let r = 0; r < svl!; r++) {
+            const want = zaRows?.[r] ?? hex(sme.za.za.subarray(r * svl!, (r + 1) * svl!))
+            const got = hex(za.subarray(r * svl!, (r + 1) * svl!))
+            if (got !== want) problems.push(`${text} (seed ${seed})${fpcrNote}: ZA row ${r} = ${got.padStart(svl! * 2, '0')}, the CPU ${want.padStart(svl! * 2, '0')}`)
+          }
+          const wantZt = zt0 ?? hex(sme.za.zt0)
+          const gotZt = hex(m.readRegisterBytes(ZT0))
+          if (gotZt !== wantZt) problems.push(`${text} (seed ${seed}): zt0 = ${gotZt}, the CPU ${wantZt}`)
+        }
         const gotFpsr = Number(m.readRegister(FPSR_ID))
         if (gotFpsr !== sveFpsr) problems.push(`${text} (seed ${seed})${fpcrNote}: FPSR = ${gotFpsr.toString(16)}, the CPU ${sveFpsr.toString(16)}`)
-        const changed = new Map(memory)
+        const changed = new Map<number, number>()
+        for (const [at, v] of memory as unknown as Change[]) {
+          if (typeof v === 'number') changed.set(at, v)
+          else for (let k = 0; k < v.length / 2; k++) changed.set(at + k, parseInt(v.slice(2 * k, 2 * k + 2), 16))
+        }
         for (let b = 0; b < s.memory.length; b++) {
           const want = changed.get(b) ?? s.memory[b]!
           const got = m.readByte(SIM_BUF + b)

@@ -3,26 +3,15 @@
  * Every register in one grid, coloured by what the program has done to it so far: grey = not used,
  * green = read, red = written. Registers the last step wrote stay highlighted until the next step.
  * Clicking a cell opens its details (hex, binary, signed, unsigned, ASCII, float) under the grid; a vector
- * register opens as lanes of a chosen size and format.
+ * register opens as lanes of a chosen size and format, a matrix register (SME's ZA) as a grid of its tiles.
  */
 import { t, tx } from '../i18n'
 import { computed, ref } from 'vue'
-import {
-  bfloatFromBits,
-  bigOfBytes,
-  binGroupsOf,
-  charOf,
-  doubleFromBits,
-  floatFromBits,
-  halfFromBits,
-  hexBits,
-  javaDouble,
-  javaFloat,
-  signedText,
-  unsignedText,
-} from '../../core/format'
+import { bfloatFromBits, bigOfBytes, binGroupsOf, charOf, doubleFromBits, floatFromBits, halfFromBits, hexBits, javaDouble, javaFloat, signedText, unsignedText } from '../../core/format'
 import { READ, WRITTEN, type Machine, type RegisterSpec, type RegValue } from '../../core/isa'
 import { isaKey, load, save } from '../storage'
+import { laneText, type LaneFormat } from './lanes'
+import MatrixGrid from './MatrixGrid.vue'
 import type { SessionHandle } from './useSession'
 
 const props = defineProps<{ handle: SessionHandle }>()
@@ -100,7 +89,7 @@ const view = computed(() => {
 
 /** How a vector register is split into lanes, and how each lane reads. */
 const laneBytes = ref<number>(load(isaKey(isa.id, 'laneBytes'), 4))
-const laneFormat = ref<'hex' | 'int' | 'uint' | 'float'>(load(isaKey(isa.id, 'laneFormat'), 'hex'))
+const laneFormat = ref<LaneFormat>(load(isaKey(isa.id, 'laneFormat'), 'hex'))
 const LANE_SIZES = [
   { bytes: 1, name: 'B' },
   { bytes: 2, name: 'H' },
@@ -113,20 +102,6 @@ function setLanes(bytes: number | null, format: typeof laneFormat.value | null) 
   if (format != null) laneFormat.value = format
   save(isaKey(isa.id, 'laneBytes'), laneBytes.value)
   save(isaKey(isa.id, 'laneFormat'), laneFormat.value)
-}
-
-function laneText(bytes: Uint8Array, at: number, size: number, format: string): string {
-  const raw = bigOfBytes(bytes, at, size)
-  const bits = size * 8
-  if (format === 'int') return BigInt.asIntN(bits, raw).toString()
-  if (format === 'uint') return raw.toString()
-  if (format === 'float') {
-    if (size === 2) return String(halfFromBits(Number(raw)))
-    if (size === 4) return javaFloat(floatFromBits(Number(raw) | 0))
-    if (size === 8) return javaDouble(doubleFromBits(Number(raw & 0xffffffffn) | 0, Number(raw >> 32n) | 0))
-    return '—'
-  }
-  return hexBits(raw, bits)
 }
 
 const detail = computed(() => {
@@ -148,12 +123,14 @@ const detail = computed(() => {
     const lanes = Array.from({ length: Math.floor((bytes.length * 8) / size) }, (_, i) => ({ i, text: String(bit(i * size)) }))
     return { spec, scalar: false, hex: '', groups: [] as string[], top: 0, rows: [], lanes, change, status }
   }
+  // A matrix register is drawn by MatrixGrid, as tiles or rows.
+  if (spec.kind === 'matrix') return { spec, scalar: false, hex: '', groups: [] as string[], top: 0, rows: [], lanes: [], change: null, status }
   if (!scalar(spec)) {
-    // Vector and matrix registers: lanes of the chosen size, lowest lane first.
+    // Vector registers: lanes of the chosen size, lowest lane first.
     const bytes = m?.readRegisterBytes?.(id) ?? new Uint8Array(Math.ceil(bits / 8))
     const size = Math.min(laneBytes.value, bytes.length)
     const lanes = Array.from({ length: Math.floor(bytes.length / size) }, (_, i) => ({ i, text: laneText(bytes, i * size, size, laneFormat.value) }))
-    return { spec, scalar: false, hex: '', groups: [] as string[], top: 0, rows: [], lanes, change: spec.kind === 'matrix' ? null : change, status }
+    return { spec, scalar: false, hex: '', groups: [] as string[], top: 0, rows: [], lanes, change, status }
   }
   const value = m ? valueOf(m, spec) : 0
   const bytes = Array.from({ length: Math.ceil(bits / 8) }, (_, i) => Number((BigInt.asUintN(bits, BigInt(value)) >> BigInt(8 * i)) & 0xffn))
@@ -249,7 +226,8 @@ function toggle(id: number) {
           </template>
           <span v-else class="small muted">{{ t('每个元素一位：1 = 活跃', 'one bit per element: 1 = active') }}</span>
         </div>
-        <div class="lanes mono">
+        <MatrixGrid v-if="detail.spec.kind === 'matrix'" :handle="handle" :spec="detail.spec" :size="laneBytes" :format="laneFormat" />
+        <div v-else class="lanes mono">
           <span v-for="l in detail.lanes" :key="l.i" class="lane"><small>[{{ l.i }}]</small>{{ l.text }}</span>
         </div>
       </template>

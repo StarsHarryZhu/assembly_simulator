@@ -16,13 +16,15 @@ decoder, formatter, references, both languages) and throughput.
 ## 3. Contents
 
 - `llvm.test.ts` — disassembly, re-assembly and unallocated space against LLVM; programs against clang.
-- `llvm-scope.ts` — text normalisation and the out-of-scope instruction list (newer SVE extensions included).
+- `llvm-scope.ts` — text normalisation and the out-of-scope instruction list (newer SVE and SME extensions included).
 - `machine.test.ts` — programs, system calls, C library, faults, EL1 exceptions, undo and colours.
 - `examples.test.ts` — the examples: same code in both languages, formatted, expected output (the sve
-  example at several vector lengths).
-- `plugin.test.ts` — both languages, calculator, decoder, formatter and references.
+  example at several vector lengths, the sme example at several streaming vector lengths).
+- `plugin.test.ts` — both languages, calculator, decoder, formatter and references (the SME table's
+  examples assemble).
 - `native.test.ts` — every native case replayed on our machine: registers, vector registers (Z and P for
-  SVE, at the recorded vector length), flags, FPSR, buffer and faults.
+  SVE, at the recorded vector length; ZA and ZT0 too for SME), flags, FPSR, buffer and faults.
+- `streaming.test.ts` — which encodings each SVCR state forbids, against the M5's probe.
 - `sve.test.ts` — the SVE instructions streaming mode forbids: first-fault loads and the FFR, gathers,
   scatters, FADDA, FTMAD, FEXPA, COMPACT, ADR, quadword permutes, SVE2 crypto, bit permutes, histograms
   and matrix multiplies (against Neon per 128-bit segment where it has them).
@@ -33,5 +35,6 @@ decoder, formatter, references, both languages) and throughput.
 
 ## 4. Progress
 
-Done: phase 1, 2 and 3 coverage, including 16902 native-CPU behaviour cases (3240 for the base, 8107 for
-floating point, Neon and crypto, 5555 for SVE in streaming mode). Not done: SME (phase 4).
+Done: phase 1 to 4 coverage, including 18954 native-CPU behaviour cases (3240 for the base, 8107 for
+floating point, Neon and crypto, 5555 for SVE and 2052 for SME in streaming mode) and the four-state
+probe of 5768 words. Not done: nothing planned.

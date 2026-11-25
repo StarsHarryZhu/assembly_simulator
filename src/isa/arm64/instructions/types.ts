@@ -91,8 +91,20 @@ export interface Cpu {
    * (FEAT_AFP), the rest comes from register `merge` instead.
    */
   vset(n: number, bytes: number, v: bigint, merge?: number): void
-  /** The SVE vector length in bytes (VL / 8): a Z register's size; vread(n, vl) and vwrite read and write one. */
+  /**
+   * The vector length in effect, in bytes (VL / 8; in Streaming SVE mode the streaming length SVL / 8): a Z
+   * register's size; vread(n, vl) and vwrite read and write one.
+   */
   readonly vl: number
+  /** The streaming vector length in bytes (SVL / 8) in either mode: ZA has svl rows of svl bytes. */
+  readonly svl: number
+  /** Row r (0 to svl − 1) of the ZA array, svl bytes (a copy). */
+  zaRead(r: number): Uint8Array
+  /** Write row r of the ZA array. */
+  zaWrite(r: number, data: Uint8Array): void
+  /** ZT0's 64 bytes (a copy). */
+  zt0Read(): Uint8Array
+  zt0Write(data: Uint8Array): void
   /** Predicate register n (0–15, 16 for FFR) as one 0/1 byte per vector byte (vl entries). */
   pread(n: number): Uint8Array
   /** Write predicate n (16 for FFR) from one 0/1 byte per vector byte. */
