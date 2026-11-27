@@ -33,6 +33,8 @@ export const INITIAL_GP = 0x10008000
 export const HEAP_BASE = 0x10040000
 export const EXCEPTION_HANDLER = 0x80000180
 const UNDO_LIMIT = 2000
+/** Undo records in the ring: one more than the limit, so the step being made never writes over a kept one. */
+const RING = UNDO_LIMIT + 1
 
 /** MARS exception cause codes. */
 export const CAUSE = {
@@ -62,6 +64,9 @@ export class WaitForInput {
   constructor(readonly request: InputRequest) {}
 }
 
+/** An open file descriptor. `failed`: a read-open of a missing file, which keeps its descriptor as in MARS. */
+type OpenFile = { name: string; data: Uint8Array; length: number; pos: number; write: boolean; failed?: boolean }
+
 interface Slot {
   def: InstrDef
   d: Decoded
@@ -75,27 +80,35 @@ class StepLog {
   prevHalt: HaltReason | null = null
   heapTop = 0
   heapBlocks = 0
+  // Each list holds its first `…N` entries; the rest are stale, to be overwritten (truncating an array is a
+  // slow runtime call in V8, and every step refills the lists).
+  regN = 0
   regIds: number[] = []
   regOld: number[] = []
+  statusN = 0
   statusIds: number[] = []
   statusOld: number[] = []
   /** Stores this step made: start address, size (1, 2 or 4 bytes) and the bytes they replaced. */
+  memN = 0
   memAddr: number[] = []
   memSize: number[] = []
   memOld: number[] = []
+  readN = 0
   reads: number[] = []
+  /**
+   * What a system call changes in place, as it was before the step: the random streams (copies), the open
+   * files (copies; a write only appends past `length`, so the bytes they share stay valid), and the file
+   * store's earlier contents of the files it changed.
+   */
+  randoms: [number, JavaRandom][] | null = null
+  files: [number, OpenFile][] | null = null
+  vfs: [string, Uint8Array | null][] | null = null
   output = ''
   sleep = 0
   reset(pc: number) {
     this.pc = pc
-    this.regIds.length = 0
-    this.regOld.length = 0
-    this.statusIds.length = 0
-    this.statusOld.length = 0
-    this.memAddr.length = 0
-    this.memSize.length = 0
-    this.memOld.length = 0
-    this.reads.length = 0
+    this.regN = this.statusN = this.memN = this.readN = 0
+    if (this.randoms || this.files) this.randoms = this.files = this.vfs = null
     this.output = ''
     this.sleep = 0
   }
@@ -115,7 +128,10 @@ export class MipsMachine implements Machine, Cpu {
   private c0Regs = new Int32Array(4)
   private mem = new PagedMemory()
   private status = new Uint8Array(REGISTER_COUNT)
-  private written = new Map<number, number>()
+  /** For each 4 KB page, how many logged stores touched each of its words (the memory panel's highlights). */
+  private written = new Map<number, Uint32Array>()
+  private wKey = -1
+  private wPage: Uint32Array | undefined = undefined
 
   private pcReg = 0
   /** Address of the instruction being executed (Cpu.pc). */
@@ -142,7 +158,7 @@ export class MipsMachine implements Machine, Cpu {
   private blocks: { addr: number; size: number; index: number }[] = []
   readonly randoms = new Map<number, JavaRandom>()
   /** Open descriptors. `failed`: a read-open of a missing file, which keeps its descriptor as in MARS. */
-  readonly openFiles = new Map<number, { name: string; data: Uint8Array; length: number; pos: number; write: boolean; failed?: boolean }>()
+  readonly openFiles = new Map<number, OpenFile>()
 
   constructor(program: Program, env: Environment) {
     this.program = program
@@ -160,7 +176,7 @@ export class MipsMachine implements Machine, Cpu {
       }
     }
     this.hasHandler = this.slotAt(EXCEPTION_HANDLER) != null
-    for (let i = 0; i < UNDO_LIMIT; i++) this.ring.push(new StepLog())
+    for (let i = 0; i < RING; i++) this.ring.push(new StepLog())
     this.reset()
   }
 
@@ -180,6 +196,8 @@ export class MipsMachine implements Machine, Cpu {
     for (const chunk of this.program.image) this.mem.load(chunk.addr, chunk.bytes)
     this.status.fill(IDLE)
     this.written.clear()
+    this.wKey = -1
+    this.wPage = undefined
     this.pcReg = this.program.entry
     this.stepCount = 0
     this.haltReason = null
@@ -269,7 +287,7 @@ export class MipsMachine implements Machine, Cpu {
   }
 
   private beginLog(): StepLog {
-    const log = this.ring[(this.ringHead + this.ringCount) % UNDO_LIMIT]!
+    const log = this.ring[(this.ringHead + this.ringCount) % RING]!
     log.reset(this.pcReg)
     log.prevSteps = this.stepCount
     log.prevHalt = this.haltReason
@@ -281,7 +299,7 @@ export class MipsMachine implements Machine, Cpu {
 
   private commit(): void {
     if (this.ringCount < UNDO_LIMIT) this.ringCount++
-    else this.ringHead = (this.ringHead + 1) % UNDO_LIMIT
+    else this.ringHead = (this.ringHead + 1) % RING
   }
 
   private execute(log: StepLog): void {
@@ -318,6 +336,13 @@ export class MipsMachine implements Machine, Cpu {
         this.commit()
         return
       }
+      // A fault in the simulator itself: take back what the step did, so the machine and its undo log stay
+      // consistent, and let the error surface.
+      this.rollback(log)
+      this.stepCount = log.prevSteps
+      this.haltReason = log.prevHalt
+      this.heapTop = log.heapTop
+      this.blocks.length = log.heapBlocks
       throw e
     }
   }
@@ -339,7 +364,7 @@ export class MipsMachine implements Machine, Cpu {
   private info(log: StepLog): StepInfo {
     const writes: RegChange[] = []
     const seen = new Set<number>()
-    for (let i = 0; i < log.regIds.length; i++) {
+    for (let i = 0; i < log.regN; i++) {
       const id = log.regIds[i]!
       if (seen.has(id)) continue
       seen.add(id)
@@ -348,9 +373,9 @@ export class MipsMachine implements Machine, Cpu {
     return {
       pc: log.pc,
       nextPc: this.pcReg,
-      reads: [...new Set(log.reads)],
+      reads: [...new Set(log.reads.slice(0, log.readN))],
       writes,
-      memory: log.memAddr.map((addr, i) => ({ addr, size: log.memSize[i]! })),
+      memory: log.memAddr.slice(0, log.memN).map((addr, i) => ({ addr, size: log.memSize[i]! })),
       output: log.output,
       sleepMs: log.sleep,
       halted: this.haltReason,
@@ -365,7 +390,7 @@ export class MipsMachine implements Machine, Cpu {
     }
     if (this.ringCount === 0) return null
     this.ringCount--
-    const log = this.ring[(this.ringHead + this.ringCount) % UNDO_LIMIT]!
+    const log = this.ring[(this.ringHead + this.ringCount) % RING]!
     const undone = { pc: log.pc, output: log.output }
     this.rollback(log)
     this.stepCount = log.prevSteps
@@ -377,19 +402,29 @@ export class MipsMachine implements Machine, Cpu {
 
   /** Revert everything a (possibly partial) step recorded. */
   private rollback(log: StepLog): void {
-    for (let i = log.memAddr.length - 1; i >= 0; i--) {
+    for (let i = log.memN - 1; i >= 0; i--) {
       const a = log.memAddr[i]!
       const size = log.memSize[i]!
       const old = log.memOld[i]!
       for (let j = 0; j < size; j++) this.mem.setByte(a + j, old >>> (8 * j))
-      for (let w = (a & ~3) >>> 0; w < a + size; w += 4) {
-        const n = (this.written.get(w >>> 0) ?? 1) - 1
-        if (n <= 0) this.written.delete(w >>> 0)
-        else this.written.set(w >>> 0, n)
+      this.countWrites(a, size, -1)
+    }
+    for (let i = log.regN - 1; i >= 0; i--) this.setRawReg(log.regIds[i]!, log.regOld[i]!)
+    for (let i = log.statusN - 1; i >= 0; i--) this.status[log.statusIds[i]!] = log.statusOld[i]!
+    if (log.randoms) {
+      this.randoms.clear()
+      for (const [id, r] of log.randoms) this.randoms.set(id, r)
+    }
+    if (log.files) {
+      this.openFiles.clear()
+      for (const [fd, f] of log.files) this.openFiles.set(fd, f)
+      const store = this.env.files
+      for (let i = log.vfs!.length - 1; i >= 0; i--) {
+        const [name, data] = log.vfs![i]!
+        if (data) store.write(name, data, false)
+        else store.remove?.(name)
       }
     }
-    for (let i = log.regIds.length - 1; i >= 0; i--) this.setRawReg(log.regIds[i]!, log.regOld[i]!)
-    for (let i = log.statusIds.length - 1; i >= 0; i--) this.status[log.statusIds[i]!] = log.statusOld[i]!
     this.pcReg = log.pc
     log.reset(log.pc)
   }
@@ -412,7 +447,20 @@ export class MipsMachine implements Machine, Cpu {
   }
 
   everWritten(addr: number): boolean {
-    return this.written.has((addr & ~3) >>> 0)
+    const page = this.written.get(addr >>> 12)
+    return page !== undefined && page[(addr & 0xfff) >>> 2]! > 0
+  }
+
+  /** Count logged stores to the words of [a, a + size) up (d = 1) or back down (d = −1, undo). */
+  private countWrites(a: number, size: number, d: number): void {
+    for (let w = (a & ~3) >>> 0; w < a + size; w += 4) {
+      const key = w >>> 12
+      let page = key === this.wKey ? this.wPage : this.written.get(key)
+      if (!page) this.written.set(key, (page = new Uint32Array(1024)))
+      this.wKey = key
+      this.wPage = page
+      page[(w & 0xfff) >>> 2]! += d
+    }
   }
 
   heapBlocks(): { addr: number; size: number; index: number }[] {
@@ -420,7 +468,12 @@ export class MipsMachine implements Machine, Cpu {
   }
 
   writtenWords(): number[] {
-    return [...this.written.keys()].sort((a, b) => a - b)
+    const out: number[] = []
+    for (const key of [...this.written.keys()].sort((a, b) => a - b)) {
+      const page = this.written.get(key)!
+      for (let i = 0; i < 1024; i++) if (page[i]) out.push((key * 4096 + i * 4) >>> 0)
+    }
+    return out
   }
 
   setRegister(id: number, value: number): void {
@@ -452,20 +505,22 @@ export class MipsMachine implements Machine, Cpu {
   }
 
   private markRead(id: number): void {
-    if (this.recordReads) this.log.reads.push(id)
+    const log = this.log
+    if (this.recordReads) log.reads[log.readN++] = id
     if (this.status[id] === IDLE) {
-      this.log.statusIds.push(id)
-      this.log.statusOld.push(IDLE)
+      log.statusIds[log.statusN] = id
+      log.statusOld[log.statusN++] = IDLE
       this.status[id] = READ
     }
   }
 
   private markWrite(id: number, old: number): void {
-    this.log.regIds.push(id)
-    this.log.regOld.push(old)
+    const log = this.log
+    log.regIds[log.regN] = id
+    log.regOld[log.regN++] = old
     if (this.status[id] !== WRITTEN) {
-      this.log.statusIds.push(id)
-      this.log.statusOld.push(this.status[id]!)
+      log.statusIds[log.statusN] = id
+      log.statusOld[log.statusN++] = this.status[id]!
       this.status[id] = WRITTEN
     }
   }
@@ -575,10 +630,10 @@ export class MipsMachine implements Machine, Cpu {
     if (r == null) throw new MipsError('addr-range', L(`地址越界：${hex8(a)}（这里没有可用的内存）`, `Address out of range: ${hex8(a)} (no memory there)`), CAUSE.addressStore, a)
     if (r === 'text' || r === 'ktext') throw new MipsError('text-write', L(`不能直接写代码段：${hex8(a)}`, `Cannot write directly to the text segment: ${hex8(a)}`), CAUSE.addressStore, a)
     const log = this.log
-    log.memAddr.push(a)
-    log.memSize.push(size)
-    log.memOld.push(size === 4 ? this.mem.getWord(a) : size === 2 ? this.mem.getHalf(a) : this.mem.getByte(a))
-    for (let w = (a & ~3) >>> 0; w < a + size; w += 4) this.written.set(w >>> 0, (this.written.get(w >>> 0) ?? 0) + 1)
+    log.memAddr[log.memN] = a
+    log.memSize[log.memN] = size
+    log.memOld[log.memN++] = size === 4 ? this.mem.getWord(a) : size === 2 ? this.mem.getHalf(a) : this.mem.getByte(a)
+    this.countWrites(a, size, 1)
   }
   private misaligned(kind: 'load' | 'store', unit: 'word' | 'halfword' | 'doubleword', a: number): never {
     const what = unit === 'word' ? '4' : unit === 'halfword' ? '2' : '8'
@@ -647,7 +702,30 @@ export class MipsMachine implements Machine, Cpu {
     throw new MipsError(code, message, CAUSE.syscall)
   }
   syscall(): void {
-    runSyscall(this)
+    // Random streams (40–44) and files (13–16) change in place: keep what undo needs first, only for
+    // those services, so the others stay cheap.
+    const service = this.gpr[2]!
+    const log = this.log
+    if (service >= 40 && service <= 44) {
+      log.randoms ??= [...this.randoms].map(([id, r]) => [id, Object.assign(Object.create(JavaRandom.prototype) as JavaRandom, r)])
+      return runSyscall(this)
+    }
+    if (service < 13 || service > 16) return runSyscall(this)
+    if (!log.files) {
+      log.files = [...this.openFiles].map(([fd, f]) => [fd, { ...f }])
+      log.vfs = []
+    }
+    const store = this.env.files
+    const before = new Map(store.list().map((name) => [name, store.read(name)]))
+    try {
+      runSyscall(this)
+    } finally {
+      // The store replaces a file's bytes when it is written: an entry that changed is a new array.
+      for (const name of new Set([...before.keys(), ...store.list()])) {
+        const old = before.get(name) ?? null
+        if (store.read(name) !== old && !log.vfs!.some(([n]) => n === name)) log.vfs!.push([name, old])
+      }
+    }
   }
   eret(): void {
     this.setC0Flat(C0_STATUS, this.c0Regs[1]! & ~0x2)

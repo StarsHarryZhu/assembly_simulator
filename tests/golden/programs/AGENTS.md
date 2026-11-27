@@ -21,5 +21,7 @@ the error text and position are compared too.
 
 ## 4. Progress
 
-Done: 39 programs (`handler-faults` and `parity-details` hold the edge cases found by
-differential testing). Not done: nothing outstanding.
+Done: 42 programs (`handler-faults` and `parity-details` hold the edge cases found by
+differential testing; `input-reals`, `lexer-edge` and `err-eqv-columns` those of the phase 5 deep check:
+reading reals as Java does, the lexer's numbers, signs, labels and character literals, and error columns
+after `.eqv` substitution). Not done: nothing outstanding.

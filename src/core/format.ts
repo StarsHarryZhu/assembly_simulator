@@ -1,4 +1,5 @@
 /** Number formatting shared by every panel. Values are raw 32-bit patterns unless a name says otherwise. */
+import type { RegValue } from './isa'
 
 export function u32(v: number): number {
   return v >>> 0
@@ -10,6 +11,68 @@ export function hex8(v: number): string {
 
 export function hexN(v: number, digits: number): string {
   return '0x' + (v >>> 0).toString(16).padStart(digits, '0').slice(-digits)
+}
+
+/** Sixteen hex digits: a 64-bit value (a bigint, or a number taken as unsigned). */
+export function hex16(v: bigint | number): string {
+  const b = typeof v === 'bigint' ? BigInt.asUintN(64, v) : BigInt(v >>> 0)
+  return '0x' + b.toString(16).padStart(16, '0')
+}
+
+/** A value of the given width as hex: eight digits for 32 bits and fewer, sixteen for 64. */
+export function hexBits(v: RegValue, bits: number): string {
+  if (bits <= 32) return hex8(Number(typeof v === 'bigint' ? BigInt.asUintN(32, v) : v))
+  return '0x' + BigInt.asUintN(bits, BigInt(v)).toString(16).padStart(Math.ceil(bits / 4), '0')
+}
+
+/** A value of the given width read as a two's-complement signed number, in decimal. */
+export function signedText(v: RegValue, bits: number): string {
+  return BigInt.asIntN(bits, BigInt(v)).toString()
+}
+
+/** A value of the given width read as unsigned, in decimal. */
+export function unsignedText(v: RegValue, bits: number): string {
+  return BigInt.asUintN(bits, BigInt(v)).toString()
+}
+
+const TWO48 = 2 ** 48
+const TOP_HALF = 0xffff000000000000n
+
+/**
+ * The 64-bit virtual address an address number stands for: numbers at or above 2^48 are the top half of the
+ * address space (see MemoryLayout.addressBits).
+ */
+export function vaOf(addr: number): bigint {
+  return addr >= TWO48 ? TOP_HALF + BigInt(addr - TWO48) : BigInt(addr)
+}
+
+/** A scratch cell: storing a bigint keeps it modulo 2^64, and the halves read back as numbers. */
+const VA64 = new BigUint64Array(1)
+const VA32 = new Uint32Array(VA64.buffer)
+
+/**
+ * The address number for a 64-bit virtual address, or null between the two halves. Every load and store
+ * calls this, so it avoids BigInt arithmetic and Number(), a slow runtime call.
+ */
+export function addrOf(va: bigint): number | null {
+  VA64[0] = va
+  const hi = VA32[1]!
+  const lo = VA32[0]!
+  if (hi < 0x10000) return hi * 0x1_0000_0000 + lo
+  if (hi >= 0xffff0000) return (hi - 0xffff0000) * 0x1_0000_0000 + lo + TWO48
+  return null
+}
+
+/** An address as hex: eight digits in a 32-bit address space, sixteen in a 64-bit one. */
+export function hexAddr(addr: number, bits: 32 | 64 = 32): string {
+  return bits === 64 ? hex16(vaOf(addr)) : hex8(addr)
+}
+
+/** `n` little-endian bytes from `offset` as an unsigned bigint. */
+export function bigOfBytes(bytes: ArrayLike<number>, offset: number, n: number): bigint {
+  let v = 0n
+  for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[offset + i]! & 0xff)
+  return v
 }
 
 export function bin32(v: number): string {
@@ -24,6 +87,20 @@ export function binBits(v: number, n: number): string {
 export function binGroups(v: number): string[] {
   const b = bin32(v)
   return [b.slice(0, 8), b.slice(8, 16), b.slice(16, 24), b.slice(24)]
+}
+
+/** Groups of eight bits of a value of the given width, most significant first. */
+export function binGroupsOf(v: RegValue, bits: number): string[] {
+  if (bits <= 32) return binGroups(Number(typeof v === 'bigint' ? BigInt.asUintN(32, v) : v)).slice(4 - Math.ceil(bits / 8))
+  const b = BigInt.asUintN(bits, BigInt(v)).toString(2).padStart(bits, '0')
+  return Array.from({ length: Math.ceil(bits / 8) }, (_, i) => b.slice(i * 8, i * 8 + 8))
+}
+
+/** Bytes as hex, most significant (last) byte first: how a vector register reads as one number. */
+export function hexOfBytes(bytes: ArrayLike<number>): string {
+  let s = ''
+  for (let i = bytes.length - 1; i >= 0; i--) s += (bytes[i]! & 0xff).toString(16).padStart(2, '0')
+  return '0x' + s
 }
 
 export function signed(v: number): number {
@@ -61,6 +138,21 @@ export function floatFromBits(bits: number): number {
 export function bitsFromFloat(value: number): number {
   f32[0] = value
   return i32[0]!
+}
+
+/** An IEEE 754 half-precision value from its 16 bits. */
+export function halfFromBits(bits: number): number {
+  const sign = bits & 0x8000 ? -1 : 1
+  const exp = (bits >>> 10) & 0x1f
+  const frac = bits & 0x3ff
+  if (exp === 0) return sign * frac * 2 ** -24
+  if (exp === 31) return frac ? NaN : sign * Infinity
+  return sign * (1 + frac / 1024) * 2 ** (exp - 15)
+}
+
+/** A bfloat16 value from its 16 bits (the top half of a single). */
+export function bfloatFromBits(bits: number): number {
+  return floatFromBits((bits & 0xffff) << 16)
 }
 
 /** Little-endian host: low word first. MIPS keeps the low word in the even register. */

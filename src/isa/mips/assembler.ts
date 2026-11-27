@@ -2,8 +2,9 @@
  * Two-pass MIPS assembler with MARS 4.5 semantics.
  *
  * Pre-pass: .include, .eqv substitution and macro expansion, producing a flat list of tokenized lines.
- * Pass 1:   labels, data directives, and the size of every instruction (pseudo forms have fixed sizes).
- * Pass 2:   symbol resolution and encoding.
+ * Pass 1:   labels, data directives, and the size of every instruction (pseudo forms have fixed sizes);
+ *           labels used as data values are resolved at its end.
+ * Pass 2:   symbol resolution in instructions and encoding.
  * As in MARS, pass 2 is skipped when pass 1 found errors.
  */
 import { L, tx } from '../../core/i18n'
@@ -22,7 +23,7 @@ import { encode, render } from './encoding'
 import { choose, describeSpec, FORMS_BY_NAME, type Form, type MatchError } from './forms'
 import { BASIC_BY_NAME } from './instructions'
 import type { InstrDef } from './instructions/types'
-import { DIRECTIVE_NAMES, tokenize, type Token } from './lexer'
+import { DIRECTIVE_NAMES, isLexical, lexicalErrors, splitSigns, tokenizeRaw, type Token } from './lexer'
 import type { Emit, Rel } from './pseudo'
 
 export const TEXT_BASE = 0x00400000
@@ -60,6 +61,8 @@ interface Line {
   /** The text shown for this line (the macro call line for expanded macro bodies). */
   source: string
   tokens: Token[]
+  /** Errors found while expanding a macro into this line, reported by pass 1 just before the line itself. */
+  errors?: { col: number; code: string; message: string; length?: number }[]
 }
 
 type Segment = 'text' | 'data' | 'ktext' | 'kdata'
@@ -89,21 +92,31 @@ interface Macro {
   body: { tokens: Token[]; text: string }[]
 }
 
+const isMnemonic = (word: string) => FORMS_BY_NAME.has(word.toLowerCase())
+
 function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[] {
   const out: Line[] = []
   const eqv = new Map<string, Token[]>()
   /** Each .eqv value as written, since MARS lets a name be defined again only with the same text. */
   const eqvText = new Map<string, string>()
+  /** .eqv names whose value has a character literal: MARS substitutes it without its closing quote. */
+  const eqvChar = new Set<string>()
   const macros = new Map<string, Macro[]>()
   let macroSerial = 0
 
+  // MARS substitutes the text and then reads the line again, so columns are those of the new text:
+  // each replacement token keeps its offset in the .eqv value, and later tokens shift by the change in length.
   const substituteEqv = (tokens: Token[]): Token[] => {
     if (eqv.size === 0) return tokens
     const res: Token[] = []
+    let shift = 0
     for (const t of tokens) {
       const rep = t.kind === 'ident' ? eqv.get(t.text) : undefined
-      if (rep) for (const r of rep) res.push({ ...r, col: t.col })
-      else res.push(t)
+      if (rep) {
+        const start = rep[0]!.col
+        for (const r of rep) res.push({ ...r, col: t.col + shift + r.col - start })
+        shift += spanText(rep).length - t.text.length
+      } else res.push(shift ? { ...t, col: t.col + shift } : t)
     }
     return res
   }
@@ -127,6 +140,11 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
   const defineEqv = (here: { file: string; line: number }, raw: Token[]): boolean => {
     const first = raw[0]!
     const nameTok = raw[1]
+    if (nameTok && raw.length === 2) {
+      // MARS skips a name without a value, so the name stays undefined.
+      diags.warn(here, first.col, 'eqv-ignored', L(`.eqv ${nameTok.text} 没有替换内容，已忽略`, `.eqv ${nameTok.text} has no replacement and is ignored`))
+      return false
+    }
     if (!nameTok || nameTok.kind !== 'ident' || raw.length < 3) {
       diags.error(here, first.col, 'bad-eqv', L('.eqv 的写法是：.eqv 名字 替换内容', '.eqv is written as: .eqv name replacement'))
       return false
@@ -137,10 +155,16 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
       diags.error(here, first.col, 'bad-eqv', L(`.eqv 不能用指令或伪操作的名字 "${nameTok.text}"`, `.eqv cannot use the instruction or directive name "${nameTok.text}"`))
       return false
     }
+    // A word MARS cannot read was already reported (see lexicalErrors).
+    if (raw.slice(2).some(isLexical)) return false
     const bad = raw.slice(2).find((t) => t.kind === 'bad' || t.kind === 'marg')
     if (bad) {
       // A macro parameter is not substituted inside .eqv in MARS either: the name would stand for "%x" itself.
       diags.error(here, bad.col, 'bad-eqv', L(`.eqv 的替换内容里有无效的写法 "${bad.text}"`, `The .eqv replacement contains an invalid token "${bad.text}"`), bad.text.length)
+      return false
+    }
+    if (raw.slice(2).some((t) => t.kind === 'ident' && t.text === nameTok.text)) {
+      diags.error(here, first.col, 'bad-eqv', L(`.eqv 不能用 "${nameTok.text}" 替换它自己`, `.eqv cannot replace "${nameTok.text}" with itself`))
       return false
     }
     const value = spanText(raw.slice(2))
@@ -151,10 +175,13 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
     }
     eqvText.set(nameTok.text, value)
     eqv.set(nameTok.text, substituteEqv(raw.slice(2)))
+    if (raw.slice(2).some((t) => t.kind === 'int' && t.text[0] === "'")) eqvChar.add(nameTok.text)
     return true
   }
 
-  const emitLine = (file: string, lineNo: number, source: string, tokens: Token[], active: Macro[]): void => {
+  const emitLine = (file: string, lineNo: number, source: string, substituted: Token[], active: Macro[]): void => {
+    // Only now is the word before each sign final (see splitSigns); mnemonics are operators, macro names are not.
+    const tokens = splitSigns(substituted, isMnemonic)
     if (tokens.length === 0) {
       out.push({ file, line: lineNo, source, tokens })
       return
@@ -179,6 +206,7 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
         // .eqv lines in a body took effect when the macro was defined, as in MARS.
         if (b.tokens[0]?.kind === 'dir' && b.tokens[0].text === '.eqv') continue
         const expanded: Token[] = []
+        const errors: Line['errors'] = []
         for (const t of b.tokens) {
           if (t.kind === 'marg') {
             const idx = call.macro.params.indexOf(t.text)
@@ -186,6 +214,7 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
               for (const a of call.args[idx]!) expanded.push({ ...a, col: t.col })
               continue
             }
+            errors.push({ col: t.col, code: 'bad-macro', message: L(`宏 "${call.macro.name}" 没有参数 "${t.text}"`, `Macro "${call.macro.name}" has no parameter "${t.text}"`), length: t.text.length })
           }
           if (t.kind === 'ident' && local.has(t.text)) {
             expanded.push({ ...t, text: `${t.text}_M${serial}` })
@@ -193,12 +222,31 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
           }
           expanded.push(t)
         }
+        const first = out.length
         emitLine(file, lineNo, source, substituteEqv(retokenize(expanded)), [...active, call.macro])
+        if (errors.length) {
+          const at = out[first]
+          if (at) at.errors = [...errors, ...(at.errors ?? [])]
+          else out.push({ file, line: lineNo, source, tokens: [], errors })
+        }
       }
       return
     }
     out.push({ file, line: lineNo, source, tokens })
   }
+
+  /** Report a missing or unusable name after .macro. */
+  const badMacroName = (here: { file: string; line: number }, raw: Token[]): boolean => {
+    const nameTok = raw[1]
+    if (!nameTok) diags.error(here, raw[0]!.col, 'bad-macro', L('.macro 后面要跟宏的名字', '.macro must be followed by the macro name'))
+    else if (nameTok.kind !== 'ident' || isMnemonic(nameTok.text))
+      diags.error(here, nameTok.col, 'bad-macro', L(`"${nameTok.text}" 不能用作宏的名字（不能是指令、寄存器、数字或伪操作）`, `"${nameTok.text}" cannot be a macro name (it must not be an instruction, register, number or directive)`), nameTok.text.length)
+    else return false
+    return true
+  }
+
+  const endMacroText = (here: { file: string; line: number }, dir: Token) =>
+    diags.error(here, dir.col, 'bad-macro', L('.end_macro 后面不能再写别的内容', 'Nothing may follow .end_macro on its line'), dir.text.length)
 
   const visit = (file: SourceFile, depth: number): void => {
     const lines = file.text.split(/\r?\n/)
@@ -208,17 +256,38 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
       const text = lines[i]!
       const lineNo = i + 1
       const here = { file: file.name, line: lineNo }
-      const raw = tokenize(text)
+      const raw = tokenizeRaw(text)
       const first = raw[0]
+      for (const e of lexicalErrors(text, raw))
+        diags.error(here, e.col, 'lexical', L(`无法识别 "${e.text}"`, `Cannot read "${e.text}"`), e.text.length)
+      if (eqvChar.size > 0 && first?.text !== '.eqv') {
+        // MARS's substituted text has a broken character literal, which it cannot read.
+        let shift = 0
+        for (const t of raw) {
+          const rep = t.kind === 'ident' ? eqv.get(t.text) : undefined
+          if (!rep) continue
+          if (eqvChar.has(t.text)) {
+            // Only the first: the rest of the line is not read.
+            diags.error(here, t.col + shift, 'lexical', L(`MARS 不能使用值是字符常量的 .eqv 名字 "${t.text}"`, `MARS cannot use the .eqv name "${t.text}", whose value is a character literal`), t.text.length)
+            break
+          }
+          shift += spanText(rep).length - t.text.length
+        }
+      }
 
       if (defining) {
-        if (first?.kind === 'dir' && first.text === '.end_macro') {
+        if (first?.kind === 'dir' && first.text === '.end_macro' && raw.length > 1) {
+          // MARS does not end the macro here: the line stays in the body and fails again at each call.
+          endMacroText(here, first)
+          defining.body.push({ tokens: raw, text })
+        } else if (first?.kind === 'dir' && first.text === '.end_macro') {
           const list = macros.get(defining.name) ?? []
           list.push(defining)
           macros.set(defining.name, list)
           defining = null
         } else if (first?.kind === 'dir' && first.text === '.macro') {
-          diags.error(here, first.col, 'nested-macro', L('宏定义里不能再定义宏', 'A macro cannot be defined inside another macro'))
+          // MARS checks the name first.
+          if (!badMacroName(here, raw)) diags.error(here, first.col, 'nested-macro', L('宏定义里不能再定义宏', 'A macro cannot be defined inside another macro'))
         } else {
           if (first?.kind === 'dir' && first.text === '.eqv') defineEqv(here, raw)
           defining.body.push({ tokens: raw, text })
@@ -227,18 +296,23 @@ function preprocess(main: SourceFile, files: SourceFile[], diags: Diags): Line[]
       }
 
       if (first?.kind === 'dir' && first.text === '.macro') {
-        const nameTok = raw[1]
-        if (!nameTok || nameTok.kind !== 'ident') {
-          diags.error(here, first.col, 'bad-macro', L('.macro 后面要跟宏的名字', '.macro must be followed by the macro name'))
-          continue
+        // As in MARS, after a bad name the lines up to .end_macro are assembled as ordinary code.
+        if (badMacroName(here, raw)) continue
+        const nameTok = raw[1]!
+        const params: string[] = []
+        for (const t of raw.slice(2)) {
+          if (t.kind === 'marg') params.push(t.text)
+          else if (t.kind !== 'lparen' && t.kind !== 'rparen')
+            // MARS reports it and defines the macro without this parameter.
+            diags.error(here, t.col, 'bad-macro', L(`宏参数 "${t.text}" 无效：参数要以 % 开头`, `Invalid macro parameter "${t.text}": parameters start with %`), t.text.length)
         }
-        const params = raw.slice(2).filter((t) => t.kind === 'marg').map((t) => t.text)
         defining = { name: nameTok.text, params, body: [] }
         defLine = lineNo
         continue
       }
       if (first?.kind === 'dir' && first.text === '.end_macro') {
-        diags.error(here, first.col, 'bad-macro', L('.end_macro 前面没有对应的 .macro', '.end_macro without a matching .macro'))
+        if (raw.length > 1) endMacroText(here, first)
+        else diags.error(here, first.col, 'bad-macro', L('.end_macro 前面没有对应的 .macro', '.end_macro without a matching .macro'))
         continue
       }
       if (first?.kind === 'dir' && first.text === '.eqv') {
@@ -283,7 +357,7 @@ function spanText(tokens: Token[]): string {
 function retokenize(tokens: Token[]): Token[] {
   return tokens.map((t) => {
     if (t.kind !== 'ident' && t.kind !== 'marg') return t
-    const again = tokenize(t.text)
+    const again = tokenizeRaw(t.text)
     return again.length === 1 ? { ...again[0]!, col: t.col } : t
   })
 }
@@ -292,6 +366,8 @@ function retokenize(tokens: Token[]): Token[] {
 
 interface PendingInstr {
   line: Line
+  /** Column of the mnemonic. */
+  col: number
   form: Form
   operands: Token[]
   addr: number
@@ -309,6 +385,13 @@ interface WordFixup {
 export function assemble(main: SourceFile, options: AssembleOptions = {}): AssembleResult {
   const diags = new Diags()
   const lines = preprocess(main, options.files ?? [], diags)
+  // MARS handles .include and .eqv while it reads the source, before assembling anything: a mistake there
+  // is the only error it reports.
+  if (diags.list.some((d) => d.severity === 'error' && READING_ERRORS.has(d.code ?? '')))
+    return { ok: false, diagnostics: diags.list.filter((d) => d.severity !== 'error' || READING_ERRORS.has(d.code ?? '')), program: null }
+  // MARS meets macro definitions while it goes through the lines, so their mistakes are listed among
+  // the other pass 1 errors in line order, and an unclosed .macro only at the end of pass 1.
+  const early = diags.list.splice(0)
 
   const symbols = new Map<string, { addr: number; line: Line }>()
   const bytes = new Map<number, number>()
@@ -322,6 +405,10 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
   let externAddr = EXTERN_BASE
   let seg: Segment = 'text'
   let autoAlign = true
+  /** The data directive that a line of bare values continues (MARS starts with .word). */
+  let lastData = '.word'
+  /** Set while such a continuation line is handled: it cannot use the "value : count" repeat. */
+  let continuing = false
   /** Data labels waiting for the next data item; auto-alignment moves them along with it. */
   let waiting: { name: string; segment: Segment }[] = []
 
@@ -340,7 +427,10 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
 
   const alignTo = (n: number) => {
     const a = addr[seg]
-    const aligned = (a + n - 1) & ~(n - 1)
+    // MARS rounds up by n - (address % n) with a signed remainder, which is negative in kernel data
+    // (0x90000000 and up): there an unaligned address moves a whole step further (0x90000001 -> 0x90000008).
+    const r = (a | 0) % n
+    const aligned = r === 0 ? a : a + n - r
     if (aligned !== a) {
       addr[seg] = aligned >>> 0
       for (const w of waiting) if (w.segment === seg && symbols.get(w.name)?.addr === a) symbols.get(w.name)!.addr = addr[seg]
@@ -357,41 +447,14 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
     for (let i = 0; i < n; i++) bytes.set((at + i) >>> 0, (value >>> (8 * i)) & 0xff)
   }
 
-  /** Which line holds each instruction word, so overlapping .text addresses are caught as in MARS. */
-  const occupied = new Map<number, Line>()
-  /** Every word of an instruction must be word-aligned inside a text segment and not taken yet. */
-  const placeText = (line: Line, head: Token, at: number, size: number): boolean => {
-    for (let k = 0; k < size; k++) {
-      const a = (at + 4 * k) >>> 0
-      const r = memoryRegion(a)
-      if ((a & 3) !== 0 || (r !== 'text' && r !== 'ktext')) {
-        diags.error(
-          line,
-          head.col,
-          'bad-text-addr',
-          L(`代码段地址无效：${hex8(a)}（指令要按 4 字节对齐，放在 0x00400000–0x007ffffc 或 0x80000000–0x803ffffc）`, `Invalid text segment address: ${hex8(a)} (instructions must be word-aligned within 0x00400000–0x007ffffc or 0x80000000–0x803ffffc)`),
-          head.text.length,
-        )
-        return false
-      }
-      const prev = occupied.get(a)
-      if (prev) {
-        // MARS gives no column for this one.
-        diags.error(line, 0, 'duplicate-text-addr', L(`代码段地址 ${hex8(a)} 已经被第 ${prev.line} 行的指令占用`, `Text segment address ${hex8(a)} is already occupied by line ${prev.line}`), head.text.length)
-        return false
-      }
-    }
-    for (let k = 0; k < size; k++) occupied.set((at + 4 * k) >>> 0, line)
-    return true
-  }
 
   /**
    * Data can only be written where MARS has data memory: the data segment, stack, kernel data or MMIO.
    * Like MARS, every item (every byte of a string) that misses is reported.
    */
-  const checkData = (line: Line, tok: Token, at: number) => {
+  const checkData = (line: Line, tok: Token, at: number): boolean => {
     const r = memoryRegion(at)
-    if (r === 'data' || r === 'kdata' || r === 'mmio') return
+    if (r === 'data' || r === 'kdata' || r === 'mmio') return true
     diags.error(
       line,
       tok.col,
@@ -399,10 +462,12 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
       L(`数据地址无效：${hex8(at)}（数据只能放在数据段、栈、内核数据段或内存映射 I/O 区域）`, `Invalid data address: ${hex8(at)} (data can only go in the data segment, the stack, kernel data or memory-mapped I/O)`),
       tok.text.length,
     )
+    return false
   }
 
   /* ---------- pass 1 ---------- */
   for (const line of lines) {
+    for (const e of line.errors ?? []) diags.error(line, e.col, e.code, e.message, e.length)
     let t = line.tokens
     // MARS allows at most one label per line; a second `name:` is handed to the instruction
     // matcher, which then reports "too many operands" at the same token MARS points at.
@@ -416,6 +481,14 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
 
     if (head.kind === 'dir') {
       directive(line, head, rest)
+      continue
+    }
+    // In a data segment, a line that starts with a value or a label reference holds more values for the
+    // last data directive, even across segment changes (MARS: ".word 1" then a line "2, 3").
+    if (isData(seg) && (head.kind === 'int' || head.kind === 'real' || head.kind === 'str' || (head.kind === 'ident' && !head.text.startsWith('.') && !isMnemonic(head.text)))) {
+      continuing = true
+      directive(line, { kind: 'dir', text: lastData, col: head.col }, t)
+      continuing = false
       continue
     }
     // A dotted word that is not a directive (".foo 1"): MARS skips the statement without a word.
@@ -437,17 +510,12 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
       reportMatch(line, head, picked.form, picked.error)
       continue
     }
-    const broken = picked.form.pseudo?.marsCannot
-    if (broken) {
-      diags.error(line, head.col, 'mars-cannot', tx(broken), head.text.length)
-      continue
-    }
     if (isData(seg)) {
       diags.error(line, head.col, 'instr-in-data', L('数据段（.data）里不能写指令，先写 .text', 'Instructions cannot appear in the data segment (.data); write .text first'), head.text.length)
       continue
     }
     const size = picked.form.basic ? 1 : picked.form.pseudo!.expand(dummyArgs(rest)).length
-    if (placeText(line, head, addr[seg], size)) pending.push({ line, form: picked.form, operands: rest, addr: addr[seg], size, segment: seg })
+    pending.push({ line, col: head.col, form: picked.form, operands: rest, addr: addr[seg], size, segment: seg })
     addr[seg] = (addr[seg] + size * 4) >>> 0
   }
 
@@ -467,6 +535,13 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
     else diags.error(line, tok.col, e.code, L(`"${tok.text}" 的类型不对：这里需要${describeSpec(want)}`, `"${tok.text}" is of the wrong type: expected ${describeSpec(want)}`), tok.text.length)
   }
 
+  /** The count of "value : count"; MARS rejects zero and negative counts. */
+  function repeatCount(line: Line, count: Token): number {
+    if (count.value! > 0) return count.value!
+    diags.error(line, count.col, 'bad-repeat', L(`重复次数必须是正数，"${count.text}" 不是`, `The repeat count must be positive; "${count.text}" is not`), count.text.length)
+    return 0
+  }
+
   function directive(line: Line, head: Token, args: Token[]) {
     const d = head.text
     if (!KNOWN_DIRECTIVES.has(d)) {
@@ -484,7 +559,11 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
       if (!args.length) diags.error(line, head.col, 'bad-globl', L('.globl 后面至少要写一个标签', '.globl needs at least one label'), d.length)
       for (const a of args) {
         if (a.kind === 'ident') globals.push({ line, token: a })
-        else diags.error(line, a.col, 'bad-globl', L(`.globl 的参数必须是标签，"${a.text}" 不是`, `.globl arguments must be labels; "${a.text}" is not`), a.text.length)
+        else {
+          // MARS points at the directive and stops at the first argument that is not a label.
+          diags.error(line, head.col, 'bad-globl', L(`.globl 的参数必须是标签，"${a.text}" 不是`, `.globl arguments must be labels; "${a.text}" is not`), d.length)
+          break
+        }
       }
       return
     }
@@ -506,8 +585,12 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
       }
       return
     }
-    if (d === '.eqv' || d === '.macro' || d === '.end_macro' || d === '.include') return // handled in the pre-pass
+    // Only a body line ".end_macro <text>" gets here, from a macro call; MARS reports it at each call.
+    if (d === '.end_macro') return void diags.error(line, head.col, 'bad-macro', L('.end_macro 后面不能再写别的内容', 'Nothing may follow .end_macro on its line'), d.length)
+    if (d === '.eqv' || d === '.macro' || d === '.include') return // handled in the pre-pass
 
+    // A data directive names what later lines of bare values continue, even where it is itself an error.
+    if (DATA_LISTS.has(d)) lastData = d
     if (!isData(seg)) {
       diags.error(line, head.col, 'dir-in-text', L(`"${d}" 不能出现在代码段（.text）里，先写 .data`, `"${d}" cannot appear in the text segment (.text); write .data first`), d.length)
       return
@@ -568,6 +651,9 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
       case '.half':
       case '.byte': {
         const size = d === '.word' ? 4 : d === '.half' ? 2 : 1
+        // MARS fills in a label that is already defined right away, at the address it has at that moment,
+        // so a label that this directive's alignment moves still counts at its old, unaligned address.
+        const before = new Map(waiting.map((w) => [w.name, symbols.get(w.name)?.addr]))
         if (autoAlign && size > 1) alignTo(size)
         const start = addr[seg]
         let count = 0
@@ -575,8 +661,8 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
           const a = args[i]!
           let repeat = 1
           let hasRepeat = false
-          if (soleRepeat(args)) {
-            repeat = Math.max(0, args[i + 2]!.value!)
+          if (!continuing && soleRepeat(args)) {
+            repeat = repeatCount(line, args[i + 2]!)
             hasRepeat = true
             i += 2
           }
@@ -598,7 +684,9 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
           } else if (a.kind === 'ident' && !hasRepeat) {
             // MARS truncates a label to the low 8/16/32 bits of its address without a warning.
             checkData(line, a, addr[seg])
-            fixups.push({ line, token: a, addr: addr[seg], size })
+            const known = symbols.get(a.text)
+            if (known) putBytes(addr[seg], before.get(a.text) ?? known.addr, size)
+            else fixups.push({ line, token: a, addr: addr[seg], size })
             addr[seg] = (addr[seg] + size) >>> 0
             count++
           } else if (a.kind === 'ident') {
@@ -619,8 +707,8 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
         for (let i = 0; i < args.length; i++) {
           const a = args[i]!
           let repeat = 1
-          if (soleRepeat(args)) {
-            repeat = Math.max(0, args[i + 2]!.value!)
+          if (!continuing && soleRepeat(args)) {
+            repeat = repeatCount(line, args[i + 2]!)
             i += 2
           }
           let v: number
@@ -648,10 +736,11 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
             continue
           }
           for (let r = 0; r < repeat; r++) {
-            checkData(line, a, addr[seg])
+            // One error per value, as in MARS, even when both words of a double are out of bounds.
+            const fits = checkData(line, a, addr[seg])
             if (size === 4) putBytes(addr[seg], bitsFromFloat(v), 4)
             else {
-              checkData(line, a, addr[seg] + 4)
+              if (fits) checkData(line, a, addr[seg] + 4)
               const [low, high] = bitsFromDouble(v)
               putBytes(addr[seg], low, 4)
               putBytes(addr[seg] + 4, high, 4)
@@ -666,13 +755,16 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
     }
   }
 
+  for (const e of early) {
+    const at = e.code === 'macro-unterminated' || e.file !== main.name ? -1 : diags.list.findIndex((d) => d.file === e.file && d.line > e.line)
+    if (at < 0) diags.list.push(e)
+    else diags.list.splice(at, 0, e)
+  }
+
   for (const g of globals)
     if (!symbols.has(g.token.text))
       diags.error(g.line, g.token.col, 'bad-globl', L(`"${g.token.text}" 用 .globl 声明了，但程序里没有定义这个标签`, `"${g.token.text}" is declared with .globl but never defined`), g.token.text.length)
 
-  if (diags.errors > 0) return { ok: false, diagnostics: diags.list, program: null }
-
-  /* ---------- pass 2 ---------- */
   const lookup = (line: Line, tok: Token): number | null => {
     const s = symbols.get(tok.text)
     if (!s) {
@@ -682,18 +774,36 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
     return s.addr
   }
 
+  // Labels used as data values are filled in at the end of pass 1, as in MARS: every unknown one is
+  // reported, even after other errors, and then the instructions are left alone.
   for (const f of fixups) {
     const v = lookup(f.line, f.token)
     if (v != null) putBytes(f.addr, v, f.size)
   }
 
+  if (diags.errors > 0) return { ok: false, diagnostics: diags.list, program: null }
+
+  /* ---------- pass 2 ---------- */
+
   const labelAt = new Map<number, string>()
   for (const [name, s] of symbols) if (!labelAt.has(s.addr)) labelAt.set(s.addr, name)
 
   const instructions: ProgramInstruction[] = []
+  // MARS goes through the instructions in order and stops at the first one that names an unknown symbol,
+  // or at the next one once an error has been reported (a missing "$32" in an ld/sd expansion). Forms
+  // it cannot expand fail only at the very end, and so only when it got through all of them.
+  const cannot: PendingInstr[] = []
+  let stopped = false
   for (const p of pending) {
     const values = operandValues(p, lookup)
-    if (!values) continue
+    if (!values || diags.errors > 0) {
+      stopped = true
+      break
+    }
+    if (p.form.pseudo?.marsCannot) {
+      cannot.push(p)
+      continue
+    }
     let emits: Emit[]
     if (p.form.basic) emits = [[p.form.name, ...values.flat]]
     else emits = p.form.pseudo!.expand({ r: values.r, v: values.v })
@@ -719,6 +829,30 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
     })
   }
 
+  // Last, as MARS places the code in memory: every word must be word-aligned inside a text segment and
+  // not taken yet (a basic instruction is reported at its mnemonic, the words of an expansion at column 1).
+  // Forms MARS cannot expand fail here too, right after their first word.
+  if (!stopped) {
+    const occupied = new Map<number, Line>()
+    for (const p of pending) {
+      for (let k = 0; k < p.size; k++) {
+        const a = (p.addr + 4 * k) >>> 0
+        const r = memoryRegion(a)
+        const prev = occupied.get(a)
+        if ((a & 3) !== 0 || (r !== 'text' && r !== 'ktext'))
+          diags.error(
+            p.line,
+            p.form.basic ? p.col : 1,
+            'bad-text-addr',
+            L(`代码段地址无效：${hex8(a)}（指令要按 4 字节对齐，放在 0x00400000–0x007ffffc 或 0x80000000–0x803ffffc）`, `Invalid text segment address: ${hex8(a)} (instructions must be word-aligned within 0x00400000–0x007ffffc or 0x80000000–0x803ffffc)`),
+          )
+        // MARS gives no column for this one.
+        else if (prev) diags.error(p.line, 0, 'duplicate-text-addr', L(`代码段地址 ${hex8(a)} 已经被第 ${prev.line} 行的指令占用`, `Text segment address ${hex8(a)} is already occupied by line ${prev.line}`))
+        else occupied.set(a, p.line)
+        if (k === 0 && cannot.includes(p)) diags.error(p.line, 0, 'mars-cannot', tx(p.form.pseudo!.marsCannot!))
+      }
+    }
+  }
   if (diags.errors > 0) return { ok: false, diagnostics: diags.list, program: null }
 
   instructions.sort((a, b) => a.addr - b.addr)
@@ -732,6 +866,12 @@ export function assemble(main: SourceFile, options: AssembleOptions = {}): Assem
   }
   return { ok: true, diagnostics: diags.list, program }
 }
+
+/** Errors found while the source is read (.include, .eqv); MARS stops right after them. */
+const READING_ERRORS: ReadonlySet<string> = new Set(['lexical', 'bad-eqv', 'include'])
+
+/** Directives whose values a following line of bare values can continue. */
+const DATA_LISTS: ReadonlySet<string> = new Set(['.word', '.half', '.byte', '.float', '.double', '.ascii', '.asciiz'])
 
 /** "value : count" repeats a data value, but MARS reads it only when it is the directive's whole argument. */
 function soleRepeat(args: Token[]): boolean {
@@ -835,10 +975,11 @@ export function encodeEmit(e: Emit, at: number, line: { file: string; line: numb
         break
       default:
         // A register pair (ld, sd, mtc1.d, mfc1.d) starting at $31 would need a $32, as MARS also says.
+        // MARS gives the column of "$32" in the expanded instruction ("sw $32, ..."), not in the source.
         if ((a as number) > 31)
           diags?.error(
             line,
-            0,
+            i === 1 ? name.length + 2 : 0,
             'undefined-symbol',
             L(`这条伪指令要用一对相邻的寄存器，但 $31 后面没有寄存器（$${a as number} 不存在）`, `This pseudo-instruction needs a pair of registers, but there is no register after $31 ($${a as number} does not exist)`),
           )

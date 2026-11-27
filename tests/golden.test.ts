@@ -10,7 +10,8 @@ import { createMachine } from '../src/isa/mips/cpu'
 import { F0, HI, LO } from '../src/isa/mips/registers'
 import { ConsoleEnv } from './helpers'
 
-const ROOT = join(import.meta.dirname, 'golden')
+/** GOLDEN_DIR replays fixtures made elsewhere (see scripts/mars-golden.mjs). */
+const ROOT = process.env.GOLDEN_DIR ?? join(import.meta.dirname, 'golden')
 const names = readdirSync(join(ROOT, 'expected'))
   .filter((f) => f.endsWith('.json'))
   .map((f) => f.slice(0, -5))
@@ -35,7 +36,7 @@ const ASM_CODES: [RegExp, string][] = [
   [/not a valid floating point constant/, 'bad-data-value'],
   [/malformed expression/, 'bad-data-value'],
   [/Malformed \.eqv directive/, 'bad-eqv'],
-  [/requires a non-negative integer/, 'space-negative'],
+  [/requires a non-negative integer/, 'space-negative|bad-align'],
   [/is an out-of-range value/, 'float-range'],
   [/Error reading include file/, 'include'],
   [/Macro started but not ended/, 'macro-unterminated'],
@@ -43,6 +44,12 @@ const ASM_CODES: [RegExp, string][] = [
   [/Duplicate text segment address/, 'duplicate-text-addr'],
   [/is not a valid data segment address/, 'bad-data-addr'],
   [/Detected a macro expansion loop/, 'macro-loop'],
+  [/Invalid Macro name|Invalid macro argument|invalid text after \.END_MACRO|\.END_MACRO without \.MACRO|Unknown macro parameter|requires at least one argument/, 'bad-macro'],
+  [/Nested macros are not allowed/, 'nested-macro'],
+  [/forward reference or invalid parameters for macro/, 'unknown-op'],
+  [/\.include.*not yet implemented/, 'bad-include'],
+  [/\.extern requires two operands/, 'bad-extern'],
+  [/^INTERNAL ERROR/, 'mars-cannot'],
 ]
 
 /** MARS runtime messages -> our halt codes. */
@@ -57,7 +64,9 @@ const RUN_CODES: [RegExp, string][] = [
   [/invalid program counter/, 'bad-pc'],
   [/Cannot write directly to text segment/, 'text-write'],
   [/invalid integer input/, 'input-int'],
-  [/invalid float input|invalid double input/, 'input-float'],
+  [/invalid float input/, 'input-float'],
+  [/invalid double input/, 'input-double'],
+  [/invalid char input/, 'input-char'],
   [/must be even-numbered/, 'fp-even'],
   [/Upper bound of range cannot be negative/, 'random-bound'],
   [/Cannot read directly from text segment|to read from kernel text segment/, 'text-read'],
@@ -65,9 +74,20 @@ const RUN_CODES: [RegExp, string][] = [
   [/is negative heap amount/, 'sbrk-negative'],
 ]
 
-function codeOf(table: [RegExp, string][], message: string): string {
+/** Our code for a MARS message; `line` is the source line, which MARS repeats as the message of a lexical error. */
+function codeOf(table: [RegExp, string][], message: string, line?: string): string {
   for (const [re, code] of table) if (re.test(message)) return code
+  if (line !== undefined && message.trim() === line.trim()) return 'lexical'
   return 'unknown:' + message
+}
+
+/** Expected `line:col code` entries may list alternative codes (a|b): take ours when it is one of them. */
+function settle(want: string[], got: string[]): string[] {
+  return want.map((w, i) => {
+    const [at, codes] = w.split(' ')
+    const [gotAt, gotCode] = (got[i] ?? '').split(' ')
+    return at === gotAt && codes!.includes('|') && codes!.split('|').includes(gotCode!) ? got[i]! : w
+  })
 }
 
 const hex = (v: number) => '0x' + (v >>> 0).toString(16).padStart(8, '0')
@@ -83,9 +103,13 @@ describe.each(names)('%s', (name) => {
   it('assembles like MARS', () => {
     if (!g.assemble.ok) {
       expect(result.ok).toBe(false)
-      const want = g.assemble.errors.map((e) => `${e.line}:${e.col} ${codeOf(ASM_CODES, e.message)}`)
+      const lines = source.split('\n')
+      // MARS reports every word it cannot read twice (once per pass); we report it once.
+      const want = g.assemble.errors
+        .map((e) => `${e.line}:${e.col} ${codeOf(ASM_CODES, e.message, lines[e.line - 1])}`)
+        .filter((w, i, all) => !w.endsWith(' lexical') || all.indexOf(w) === i)
       const got = result.diagnostics.filter((d) => d.severity === 'error').map((d) => `${d.line}:${d.col} ${d.code}`)
-      expect(got).toEqual(want)
+      expect(got).toEqual(settle(want, got))
       return
     }
     expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([])

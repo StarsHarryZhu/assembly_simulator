@@ -5,6 +5,7 @@
 import { L } from '../../core/i18n'
 import { javaDouble, javaFloat } from '../../core/format'
 import type { MipsMachine } from './cpu'
+import { parseJavaReal as parseReal } from './lexer'
 import { A0, A1, A2, A3, V0 } from './registers'
 
 /** java.util.Random, so seeded streams (syscall 40) give the same numbers as MARS. */
@@ -83,29 +84,9 @@ function parseJavaInt(s: string): number | null {
   return v >= -2147483648 && v <= 2147483647 ? v : null
 }
 
-/**
- * Java's Float/Double.parseFloat: decimal or exponent forms, NaN, Infinity, an optional f/d suffix, and
- * hexadecimal floating point (0x1.8p3 = 12.0), whose binary exponent is required.
- */
-function parseJavaReal(s: string): number | null {
-  const t = javaTrim(s)
-  if (/^[+-]?(NaN|Infinity)$/.test(t)) return Number(t)
-  const hexFloat = /^([+-]?)0[xX]([0-9a-fA-F]*)(?:\.([0-9a-fA-F]*))?[pP]([+-]?\d+)[fFdD]?$/.exec(t)
-  if (hexFloat) {
-    const [, sign, whole = '', frac = '', exp] = hexFloat
-    if (!whole && !frac) return null
-    const mantissa = Number(BigInt('0x' + (whole + frac || '0')))
-    let v = mantissa
-    // Scale in steps so huge exponents neither overflow early nor lose the subnormal range.
-    for (let e = Number(exp) - 4 * frac.length; e !== 0; ) {
-      const step = Math.max(-1000, Math.min(1000, e))
-      v *= 2 ** step
-      e -= step
-    }
-    return sign === '-' ? -v : v
-  }
-  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?[fFdD]?$/.test(t)) return null
-  return Number(t.replace(/[fFdD]$/, ''))
+/** Java's Float/Double.parseFloat of a typed line: surrounding control characters and spaces are ignored. */
+function parseJavaReal(s: string, single = false): number | null {
+  return parseReal(javaTrim(s), single)
 }
 
 function hex8(v: number): string {
@@ -135,7 +116,7 @@ export function runSyscall(m: MipsMachine): void {
       return
     }
     case 6: {
-      const v = parseJavaReal(m.input({ kind: 'line', purpose: 'float' }))
+      const v = parseJavaReal(m.input({ kind: 'line', purpose: 'float' }), true)
       if (v == null) m.syscallFault(L('输入的不是浮点数（syscall 6 读取单精度）', 'Invalid float input (syscall 6 read float)'), 'input-float')
       m.setSingle(0, Math.fround(v))
       return
@@ -179,9 +160,14 @@ export function runSyscall(m: MipsMachine): void {
     case 13:
       m.sg(V0, openFile(m, latin1(m.loadCString(m.g(A0))), m.g(A1)))
       return
-    case 14:
-      m.sg(V0, readFile(m, m.g(A0), m.g(A1), m.g(A2)))
+    case 14: {
+      // As in MARS, $v0 and the file position change before the bytes are copied, so they stay changed
+      // when the buffer turns out to be unwritable.
+      const bytes = readFile(m, m.g(A0), m.g(A2))
+      m.sg(V0, bytes ? bytes.length : -1)
+      if (bytes) m.storeBytes(m.g(A1), bytes)
       return
+    }
     case 15:
       m.sg(V0, writeFile(m, m.g(A0), m.g(A1), m.g(A2)))
       return
@@ -254,7 +240,7 @@ export function runSyscall(m: MipsMachine): void {
       if (text == null) status = -2
       else if (text.trim() === '') status = -3
       else {
-        const v = purpose === 'int' ? parseJavaInt(javaTrim(text)) : parseJavaReal(text)
+        const v = purpose === 'int' ? parseJavaInt(javaTrim(text)) : parseJavaReal(text, purpose === 'float')
         if (v == null) status = -1
         else value = v
       }
@@ -328,8 +314,9 @@ function stream(m: MipsMachine, id: number): JavaRandom {
 
 /**
  * Descriptors follow MARS: a name that is already open cannot be opened again; the lowest free
- * descriptor from 3 is taken; and a failed read-open of a missing file keeps that descriptor (and the
- * name) until the program closes it, so the next open gets the one after.
+ * descriptor from 3 is taken; and a failed open (a missing file to read, or a name that can never be a
+ * file: empty, ".", ".." or "/") keeps that descriptor (and the name) until the program closes it, so
+ * the next open gets the one after.
  */
 function openFile(m: MipsMachine, name: string, flags: number): number {
   const write = flags === 1 || flags === 9
@@ -337,6 +324,10 @@ function openFile(m: MipsMachine, name: string, flags: number): number {
   for (const f of m.openFiles.values()) if (f.name === name) return -1
   let fd = 3
   while (m.openFiles.has(fd)) fd++
+  if (/^(\.{1,2}|\/*)$/.test(name)) {
+    m.openFiles.set(fd, { name, data: new Uint8Array(0), length: 0, pos: 0, write: false, failed: true })
+    return -1
+  }
   let data: Uint8Array
   let length = 0
   if (write) {
@@ -360,19 +351,17 @@ function openFile(m: MipsMachine, name: string, flags: number): number {
   return fd
 }
 
-function readFile(m: MipsMachine, fd: number, buf: number, len: number): number {
+/** The bytes a read of `len` from `fd` returns (and consumes), or null when the read fails. */
+function readFile(m: MipsMachine, fd: number, len: number): Uint8Array | null {
   if (fd === 0) {
     const line = m.input({ kind: 'line', purpose: 'string', maxLength: len })
-    const bytes = encoder.encode(line + '\n').slice(0, Math.max(0, len))
-    m.storeBytes(buf, bytes)
-    return bytes.length
+    return encoder.encode(line + '\n').slice(0, Math.max(0, len))
   }
   const f = m.openFiles.get(fd)
-  if (!f || f.write || f.failed || len < 0) return -1
+  if (!f || f.write || f.failed || len < 0) return null
   const n = Math.min(len, f.length - f.pos)
-  m.storeBytes(buf, f.data.subarray(f.pos, f.pos + n))
   f.pos += n
-  return n
+  return f.data.subarray(f.pos - n, f.pos)
 }
 
 function writeFile(m: MipsMachine, fd: number, buf: number, len: number): number {

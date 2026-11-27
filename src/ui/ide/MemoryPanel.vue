@@ -7,15 +7,21 @@
  */
 import { t } from '../i18n'
 import { computed, reactive } from 'vue'
-import { charOf, hex8, hexN } from '../../core/format'
+import { charOf, hexAddr, hexN } from '../../core/format'
 import type { DataKind } from '../../core/isa'
-import { ELEM, elementCount, elementText, KIND_TITLE, memoryEntries, type MemoryEntry } from './memoryEntries'
+import { addressNormalizer, ELEM, elementCount, elementText, kindTitle, memoryEntries, type MemoryEntry } from './memoryEntries'
 import type { SessionHandle } from './useSession'
 
 const props = defineProps<{ handle: SessionHandle }>()
 const s = props.handle.session
 const v = props.handle.version
 const isa = s.isa
+const bits = isa.layout.addressBits ?? 32
+const u = addressNormalizer(isa)
+const hexA = (a: number) => hexAddr(a, bits)
+const title = (k: DataKind) => kindTitle(isa, k)
+/** 8-byte integers are offered only where the assembler can declare them. */
+const ELEMENT_VIEWS: DataKind[] = [...(isa.language.dataDirectives?.dword ? (['dword'] as const) : []), 'word', 'half', 'byte', 'float', 'double']
 const open = reactive(new Set<string>())
 const limit = reactive(new Map<string, number>())
 /** The kind each entry is read as, when not its own. */
@@ -36,10 +42,10 @@ function viewOptions(e: MemoryEntry): { kind: DataKind; label: string }[] {
   return [
     { kind: 'space', label: t('十六进制', 'Hex') },
     { kind: e.kind === 'ascii' ? 'ascii' : 'asciiz', label: t('文本', 'Text') },
-    ...(['word', 'half', 'byte', 'float', 'double'] as const).map((k) => ({ kind: k, label: KIND_TITLE[k] })),
+    ...ELEMENT_VIEWS.map((k) => ({ kind: k, label: title(k) })),
   ]
 }
-const viewLabel = (e: MemoryEntry) => viewOptions(e).find((o) => o.kind === e.view)?.label ?? KIND_TITLE[e.view]
+const viewLabel = (e: MemoryEntry) => viewOptions(e).find((o) => o.kind === e.view)?.label ?? title(e.view)
 function setView(e: MemoryEntry, kind: DataKind) {
   if (kind === e.kind) views.delete(e.key)
   else views.set(e.key, kind)
@@ -91,7 +97,7 @@ function rows(e: MemoryEntry): { bytes: boolean; list: Row[]; more: number; idxW
   const m = s.machine!
   const max = limit.get(e.key) ?? PAGE
   const touched = s.mode === 'running' ? [] : (s.last?.memory ?? [])
-  const hit = (a: number, n: number) => touched.some((c) => c.addr >>> 0 < a + n && (c.addr >>> 0) + c.size > a)
+  const hit = (a: number, n: number) => touched.some((c) => u(c.addr) < a + n && u(c.addr) + c.size > a)
   if (TEXT_KINDS.includes(e.view) || e.view === 'space') {
     const lines = Math.ceil(e.size / 8)
     return {
@@ -100,7 +106,7 @@ function rows(e: MemoryEntry): { bytes: boolean; list: Row[]; more: number; idxW
         const a = e.addr + i * 8
         const n = Math.min(8, e.size - i * 8)
         const cells = Array.from({ length: n }, (_, j) => byteCell(m.readByte(a + j), hit(a + j, 1)))
-        return { key: a, addr: hex8(a), idx: `+${i * 8}`, cells, hex: '', value: '', zero: false, flash: false }
+        return { key: a, addr: hexA(a), idx: `+${i * 8}`, cells, hex: '', value: '', zero: false, flash: false }
       }),
       more: lines - max,
       idxWidth: `+${(lines - 1) * 8}`.length,
@@ -112,14 +118,14 @@ function rows(e: MemoryEntry): { bytes: boolean; list: Row[]; more: number; idxW
   const list: Row[] = Array.from({ length: Math.min(count, max) }, (_, i) => {
     const a = e.addr + i * step
     const { hex, value } = elementText(isa, m, e.view, a)
-    return { key: a, addr: hex8(a), idx: `[${i}]`, cells: null, hex, value, zero: /^0x0+$/.test(hex), flash: hit(a, step) }
+    return { key: a, addr: hexA(a), idx: `[${i}]`, cells: null, hex, value, zero: /^0x0+$/.test(hex), flash: hit(a, step) }
   })
   // Read as a larger kind, the bytes after the last whole element.
   const rest = e.view === e.kind ? 0 : e.size - count * step
   if (rest > 0 && count <= max) {
     const a = e.addr + count * step
     const pairs = Array.from({ length: rest }, (_, j) => hexN(m.readByte(a + j), 2).slice(2)).join(' ')
-    list.push({ key: a, addr: hex8(a), idx: `+${count * step}`, cells: null, hex: '', value: t(`还剩 ${rest} 字节：${pairs}`, `${rest} more bytes: ${pairs}`), zero: false, flash: hit(a, rest) })
+    list.push({ key: a, addr: hexA(a), idx: `+${count * step}`, cells: null, hex: '', value: t(`还剩 ${rest} 字节：${pairs}`, `${rest} more bytes: ${pairs}`), zero: false, flash: hit(a, rest) })
   }
   const idxWidth = Math.max(`[${Math.max(count - 1, 0)}]`.length, rest > 0 ? `+${count * step}`.length : 0)
   return { bytes: false, list, more: count - max, idxWidth, hexWidth: list[0]?.hex.length || 10 }
@@ -146,11 +152,11 @@ function toggle(key: string) {
         <button class="eh" :aria-expanded="open.has(e.key)" @click="toggle(e.key)">
           <span class="caret">{{ open.has(e.key) ? '▾' : '▸' }}</span>
           <span class="t mono">{{ e.title }}</span>
-          <span class="badge">{{ KIND_TITLE[e.kind] }}{{ e.count > 1 && !['ascii', 'asciiz', 'space'].includes(e.kind) ? ` ×${e.count}` : '' }}</span>
+          <span class="badge">{{ title(e.kind) }}{{ e.count > 1 && !['ascii', 'asciiz', 'space'].includes(e.kind) ? ` ×${e.count}` : '' }}</span>
           <span v-if="e.view !== e.kind" class="badge">{{ t(`读作：${viewLabel(e)}`, `read as ${viewLabel(e)}`) }}</span>
           <span v-if="e.note" class="badge warn">{{ e.note }}</span>
           <span v-if="e.ever" class="badge err">{{ t('改过', 'written') }}</span>
-          <span class="addr mono small muted">{{ hex8(e.addr) }}</span>
+          <span class="addr mono small muted">{{ hexA(e.addr) }}</span>
           <span class="sum mono">{{ e.summary }}</span>
         </button>
         <template v-if="open.has(e.key)">
@@ -167,7 +173,7 @@ function toggle(key: string) {
               {{ o.label }}
             </button>
           </div>
-          <div v-for="r in [rows(e)]" :key="'r'" class="rows" :style="{ '--idx': `${r.idxWidth}ch`, '--hex': `${r.hexWidth}ch` }">
+          <div v-for="r in [rows(e)]" :key="'r'" class="rows" :style="{ '--idx': `${r.idxWidth}ch`, '--hex': `${r.hexWidth}ch`, '--addr': `${bits === 64 ? 18 : 10}ch` }">
             <div v-for="x in r.list" :key="x.key" class="row mono" :class="{ flash: x.flash, bytes: r.bytes }">
               <span class="a">{{ x.addr }}</span>
               <span class="i">{{ x.idx }}</span>
@@ -295,7 +301,7 @@ h3 {
 /* Columns are sized in ch of the monospace font, so every row of an entry lines up. */
 .row {
   display: grid;
-  grid-template-columns: 10ch var(--idx) var(--hex) minmax(0, 1fr);
+  grid-template-columns: var(--addr) var(--idx) var(--hex) minmax(0, 1fr);
   column-gap: 1ch;
   align-items: baseline;
   padding: 1px 4px;
@@ -353,7 +359,7 @@ h3 {
 }
 @container (max-width: 340px) {
   .row.bytes {
-    grid-template-columns: 10ch var(--idx) minmax(0, 1fr);
+    grid-template-columns: var(--addr) var(--idx) minmax(0, 1fr);
   }
   .row.bytes .cs {
     grid-column: 3;
@@ -361,7 +367,7 @@ h3 {
 }
 @container (max-width: 260px) {
   .row {
-    grid-template-columns: 10ch var(--idx) minmax(0, 1fr);
+    grid-template-columns: var(--addr) var(--idx) minmax(0, 1fr);
   }
   .row .val {
     grid-column: 3;

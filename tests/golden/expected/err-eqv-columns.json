@@ -1,0 +1,43 @@
+{
+ "name": "err-eqv-columns",
+ "assemble": {
+  "ok": false,
+  "errors": [
+   {
+    "line": 6,
+    "col": 12,
+    "message": "\"(\" is not a valid integer constant or label"
+   },
+   {
+    "line": 6,
+    "col": 13,
+    "message": "\"$t0\" is not a valid integer constant or label"
+   },
+   {
+    "line": 6,
+    "col": 16,
+    "message": "\")\" is not a valid integer constant or label"
+   },
+   {
+    "line": 7,
+    "col": 12,
+    "message": "\"(\" is not a valid integer constant or label"
+   },
+   {
+    "line": 7,
+    "col": 13,
+    "message": "\"$t0\" is not a valid integer constant or label"
+   },
+   {
+    "line": 7,
+    "col": 16,
+    "message": "\")\" is not a valid integer constant or label"
+   },
+   {
+    "line": 7,
+    "col": 19,
+    "message": "\"(\" is not a valid integer constant or label"
+   }
+  ]
+ }
+}

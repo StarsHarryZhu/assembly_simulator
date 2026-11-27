@@ -1,5 +1,8 @@
-/** Architecture registry. Only MIPS32 exists today; ARM and x86-64 are listed so the selector shows the plan. */
+/**
+ * Architecture registry. MIPS32 and AArch64 are done; x86-64 is listed so the selector shows the plan.
+ */
 import type { IsaPlugin } from '../core/isa'
+import { arm64 } from './arm64'
 import { mips } from './mips'
 
 export interface IsaEntry {
@@ -11,7 +14,7 @@ export interface IsaEntry {
 
 export const isas: IsaEntry[] = [
   { id: mips.id, displayName: mips.displayName, available: true, plugin: mips },
-  { id: 'arm64', displayName: 'ARM64', available: false, plugin: null },
+  { id: arm64.id, displayName: arm64.displayName, available: true, plugin: arm64 },
   { id: 'x86_64', displayName: 'x86-64', available: false, plugin: null },
 ]
 

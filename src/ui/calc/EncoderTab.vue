@@ -9,26 +9,29 @@ import type { Text } from '../../core/i18n'
 import { lang, t, tx } from '../i18n'
 import { plainDesc } from '../ide/editor'
 import { computed, reactive, ref, watch } from 'vue'
-import { binGroups, hex8 } from '../../core/format'
+import { binGroups, hex8, hexAddr } from '../../core/format'
 import type { IsaPlugin, RefRow } from '../../core/isa'
-import { load, save } from '../storage'
+import { isaKey, load, save } from '../storage'
 import BitFields from './BitFields.vue'
 import DemoRunner from './DemoRunner.vue'
 import ReferenceTable from './ReferenceTable.vue'
-import { parseWord } from './values'
+import { parseAddress } from './values'
 
 const props = defineProps<{ isa: IsaPlugin; request?: { line: string; n: number } | null }>()
 const emit = defineEmits<{ consumed: [n: number] }>()
 const isa = props.isa
 
-const group = ref<string>(load('calcGroup', 'all'))
+const addrBits = isa.layout.addressBits ?? 32
+const hexA = (a: number) => hexAddr(a, addrBits)
+const key = (k: string) => isaKey(isa.id, k)
+const group = ref<string>(load(key('calcGroup'), 'all'))
 const query = ref('')
-const line = ref<string>(load('calcLine', 'add $t0, $t1, $t2'))
-const atText = ref<string>(load('calcAt', hex8(isa.layout.textBase)))
+const line = ref<string>(load(key('calcLine'), isa.samples.line))
+const atText = ref<string>(load(key('calcAt'), hexA(isa.layout.textBase)))
 const labelAddrs = reactive<Record<string, number>>({})
-watch(group, (g) => save('calcGroup', g))
-watch(line, (l) => save('calcLine', l))
-watch(atText, (a) => save('calcAt', a))
+watch(group, (g) => save(key('calcGroup'), g))
+watch(line, (l) => save(key('calcLine'), l))
+watch(atText, (a) => save(key('calcAt'), a))
 
 // A line opened from the editor replaces the saved one; the label addresses start from scratch. The tab
 // is re-created whenever it is shown, so tell the app the request was used: a remount must keep later edits.
@@ -44,8 +47,7 @@ watch(
 )
 
 const at = computed(() => {
-  const v = parseWord(atText.value)
-  return v == null ? isa.layout.textBase : ((v >>> 0) & ~3) >>> 0
+  return parseAddress(atText.value, addrBits) ?? isa.layout.textBase
 })
 
 // Reading lang makes a language switch re-run the analysis, whose messages are localized.
@@ -107,6 +109,12 @@ const items = computed<Item[]>(() => {
   return out
 })
 
+/** ISAs with thousands of mnemonics render the list a page at a time. */
+const PAGE = 400
+const shown = ref(PAGE)
+watch([group, query], () => (shown.value = PAGE))
+const visible = computed(() => items.value.slice(0, shown.value))
+
 const current = computed(() => directive.value ?? analysis.value.mnemonic)
 const directiveRow = computed(() => (directive.value ? (directiveRows.get(directive.value) ?? null) : null))
 
@@ -135,8 +143,8 @@ function setOperand(i: number, text: string) {
 }
 
 function setLabel(name: string, text: string) {
-  const v = parseWord(text)
-  if (v != null) labelAddrs[name] = v >>> 0
+  const v = parseAddress(text, addrBits, 1)
+  if (v != null) labelAddrs[name] = v
 }
 
 const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.word)).join(' '))
@@ -150,13 +158,13 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
         <button v-for="g in isa.catalogGroups" :key="g.id" class="chip" :aria-pressed="group === g.id" @click="group = g.id">{{ tx(g.title) }}</button>
         <button v-if="directiveRows.size" class="chip" :aria-pressed="group === DIRECTIVES" @click="group = DIRECTIVES">{{ t('伪操作', 'Directives') }}</button>
       </div>
-      <input v-model="query" class="inp search" type="search" :placeholder="t('搜索指令、伪操作或说明，如 sll、乘法、.word', 'Search instructions, directives or descriptions, e.g. sll, multiply, .word')"
+      <input v-model="query" class="inp search" type="search" :placeholder="t(`搜索指令、伪操作或说明，如 ${isa.samples.search[0]}、乘法、${isa.samples.search[1]}`, `Search instructions, directives or descriptions, e.g. ${isa.samples.search[0]}, multiply, ${isa.samples.search[1]}`)"
         spellcheck="false"
         :aria-label="t('搜索指令', 'Search instructions')"
       />
       <div class="list" role="listbox" :aria-label="t('指令', 'Instructions')">
         <button
-          v-for="e in items"
+          v-for="e in visible"
           :key="e.key"
           class="chip mn"
           role="option"
@@ -168,6 +176,9 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
           {{ e.name }}
         </button>
         <p v-if="!items.length" class="small muted">{{ t('没有匹配的指令或伪操作。', 'No matching instructions or directives.') }}</p>
+        <button v-if="items.length > visible.length" class="btn" @click="shown += PAGE * 2">
+          {{ t(`再显示一些（还有 ${items.length - visible.length} 项）`, `Show more (${items.length - visible.length} left)`) }}
+        </button>
       </div>
       <p class="small muted count">{{ t(`${items.length} 项`, `${items.length} items`) }}</p>
     </aside>
@@ -222,7 +233,7 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
             </label>
             <label v-for="l in analysis.labels" :key="l.name" class="op">
               <span class="small muted">{{ t(`标签 ${l.name} 的地址`, `Address of label ${l.name}`) }}</span>
-              <input class="inp" :value="hex8(l.addr)" spellcheck="false" @change="setLabel(l.name, ($event.target as HTMLInputElement).value)" />
+              <input class="inp" :value="hexA(l.addr)" spellcheck="false" @change="setLabel(l.name, ($event.target as HTMLInputElement).value)" />
             </label>
           </div>
         </template>
@@ -243,8 +254,8 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
             }}</span>
             <b class="mono asm">{{ ins.basic }}</b>
             <span class="mono hex2">{{ hex8(ins.word) }}</span>
-            <span class="small muted mono">{{ hex8(ins.addr) }}</span>
-            <span class="small muted role">{{ plainDesc(descOf.get(ins.view.mnemonic)) }}</span>
+            <span class="small muted mono">{{ hexA(ins.addr) }}</span>
+            <span class="small muted role">{{ plainDesc(ins.view.description ?? descOf.get(ins.view.mnemonic)) }}</span>
           </div>
           <BitFields :fields="ins.view.fields" :compact="analysis.instructions.length > 2" />
           <div class="bin mono small">

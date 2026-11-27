@@ -5,7 +5,7 @@
 import { markRaw, onBeforeUnmount, shallowRef, type ShallowRef } from 'vue'
 import type { IsaPlugin } from '../../core/isa'
 import { Session, type Granularity } from '../../core/session'
-import { load, save } from '../storage'
+import { load, loadSettings, save } from '../storage'
 import { flushSections, translateComments } from '../../core/source'
 import { lang, tx } from '../i18n'
 
@@ -70,11 +70,12 @@ export function useSession(isa: IsaPlugin): SessionHandle {
   // Saved code keeps section directives in the first column, and lines from an example follow the language.
   const savedText = saved ? translateComments(flushSections(saved.text, isa.language.sections), isa.examples, lang.value, isa.language.commentChar) : ''
   const session = markRaw(
-    new Session(isa, saved ? { name: saved.name, text: savedText } : { name: `${fallback?.id ?? 'program'}.asm`, text: fallback ? tx(fallback.text) : '' }, {
+    new Session(isa, saved ? { name: saved.name, text: savedText } : { name: `${fallback?.id ?? 'program'}${isa.language.fileExtension ?? '.asm'}`, text: fallback ? tx(fallback.text) : '' }, {
       playNote,
     }),
   )
   if (saved?.breakpoints?.length) session.setBreakpoints(saved.breakpoints)
+  Object.assign(session.settings, loadSettings(isa))
   session.interval = load<number>('interval', 500)
   session.granularity = load<Granularity>('stepBy', 'line')
 
@@ -84,6 +85,7 @@ export function useSession(isa: IsaPlugin): SessionHandle {
     save(key, { name: session.file.name, text: session.file.text, breakpoints: [...session.breakpoints] })
     save('interval', session.interval)
     save('stepBy', session.granularity)
+    for (const o of isa.settings ?? []) save(`${isa.id}.setting.${o.id}`, session.settings[o.id] ?? o.default)
   }
   const off = session.subscribe(() => {
     version.value++

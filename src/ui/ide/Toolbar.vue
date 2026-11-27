@@ -15,6 +15,9 @@ const s = props.handle.session
 const v = props.handle.version
 const busy = props.handle.busy
 const go = props.handle.control
+const ext = s.isa.language.fileExtension ?? '.asm'
+// Stepping by line differs from stepping by instruction only where one line can expand to several (AArch64 aliases are single encodings).
+const hasPseudo = s.isa.catalog.some((e) => e.pseudo)
 
 const st = computed(() => {
   void v.value
@@ -57,6 +60,7 @@ const st = computed(() => {
     running: s.mode === 'running',
     granularity: s.granularity,
     interval: s.interval,
+    settings: (s.isa.settings ?? []).map((o) => ({ spec: o, value: s.settings[o.id] ?? o.default })),
     part: part && part.parts > 1 && s.granularity === 'instruction' ? t(`伪指令第 ${part.part + 1}/${part.parts} 条`, `pseudo-instruction part ${part.part + 1}/${part.parts}`) : '',
   }
 })
@@ -69,6 +73,11 @@ function pickExample(e: Event) {
   if (id) emit('example', id)
 }
 
+function pickSetting(id: string, e: Event) {
+  const value = Number((e.target as HTMLSelectElement).value)
+  go(() => s.setSetting(id, value))
+}
+
 function toggleAuto() {
   if (s.mode === 'auto') s.pause()
   else go(() => s.auto())
@@ -79,8 +88,8 @@ function toggleAuto() {
   <div class="toolbar" role="toolbar" :aria-label="t('编辑运行工具栏', 'Edit and run toolbar')">
     <div class="group">
       <button class="btn" :title="t('新建一个空文件（当前代码没保存时会先问你）', 'Start an empty file (asks first if the current code is not saved)')" @click="emit('new')">{{ t('新建', 'New') }}</button>
-      <button class="btn" :title="t('打开 .asm 文件（也可以直接拖进编辑器）', 'Open an .asm file (or drop one on the editor)')" @click="emit('open')">{{ t('打开', 'Open') }}</button>
-      <button class="btn" :title="t('把代码下载成 .asm 文件', 'Download the code as an .asm file')" @click="emit('download')">{{ t('下载', 'Download') }}</button>
+      <button class="btn" :title="t(`打开 ${ext} 文件（也可以直接拖进编辑器）`, `Open a ${ext} file (or drop one on the editor)`)" @click="emit('open')">{{ t('打开', 'Open') }}</button>
+      <button class="btn" :title="t(`把代码下载成 ${ext} 文件`, `Download the code as a ${ext} file`)" @click="emit('download')">{{ t('下载', 'Download') }}</button>
       <select class="inp examples" value="" :aria-label="t('示例程序', 'Examples')" @change="pickExample">
         <option value="" disabled hidden>{{ t('示例程序…', 'Examples…') }}</option>
         <option v-for="ex in s.isa.examples" :key="ex.id" :value="ex.id">{{ tx(ex.title) }}</option>
@@ -122,7 +131,7 @@ function toggleAuto() {
       />
       <span class="small mono ms">{{ st.interval }} ms</span>
     </div>
-    <div class="group seg" role="radiogroup" :aria-label="t('单步一次执行多少', 'How much one step runs')">
+    <div v-if="hasPseudo" class="group seg" role="radiogroup" :aria-label="t('单步一次执行多少', 'How much one step runs')">
       <span class="small muted">{{ t('单步按', 'Step by') }}</span>
       <button class="chip" :aria-pressed="st.granularity === 'line'" :title="t('每步执行一行源码：伪指令（如 li、la、blt）展开成的几条真指令一次执行完', 'Each step runs one source line: all the basic instructions a pseudo-instruction (li, la, blt, …) expands to run together')" @click="s.setGranularity('line')">
         {{ t('源码行', 'Source line') }}
@@ -130,6 +139,12 @@ function toggleAuto() {
       <button class="chip" :aria-pressed="st.granularity === 'instruction'" :title="t('每步只执行一条真指令（和 MARS 一样），伪指令要分几步走完', 'Each step runs a single basic instruction (as MARS does), so a pseudo-instruction takes several steps')" @click="s.setGranularity('instruction')">
         {{ t('真指令', 'Basic instruction') }}
       </button>
+    </div>
+    <div v-for="o in st.settings" :key="o.spec.id" class="group setting">
+      <label class="small muted" :for="`tb-set-${o.spec.id}`" :title="tx(o.spec.note)">{{ tx(o.spec.title) }}</label>
+      <select :id="`tb-set-${o.spec.id}`" class="inp" :value="o.value" :title="tx(o.spec.note)" :disabled="st.busy" @change="pickSetting(o.spec.id, $event)">
+        <option v-for="opt in o.spec.options" :key="opt.value" :value="opt.value">{{ tx(opt.label) }}</option>
+      </select>
     </div>
     <div class="status">
       <span v-if="busy" class="spinner" :aria-label="t('处理中', 'Working')" />

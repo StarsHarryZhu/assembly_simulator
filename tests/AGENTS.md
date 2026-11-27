@@ -9,18 +9,22 @@ AGENTS.md checker keeps the folder documentation in the required shape.
 
 ## 2. Constraints
 
-- Tests never need Java or the MARS jar: fixtures are committed in `golden/expected`.
+- Tests never need Java, the MARS jar, clang or an Apple CPU: fixtures are committed (`golden/expected`,
+  `arm64/golden`).
 - A new behaviour that MARS also has gets a golden program; behaviour MARS lacks gets a unit test.
 - Tests import from `src` directly and run under Node without a browser.
 
 ## 3. Contents
 
-- `golden.test.ts` — compares our assembler and machine with the MARS fixtures, program by program.
+- `golden.test.ts` — compares our assembler and machine with the MARS fixtures, program by program
+  (MARS messages map to our codes; `GOLDEN_DIR` replays a deeper set made elsewhere).
 - `version.test.ts` — the header version is the version in package.json.
+- `registry.test.ts` — which ISAs the selector offers, and each plugin's instruction-search hint.
 - `agents-md.test.ts` — every folder has an AGENTS.md with the four sections and a complete contents list.
 - `helpers.ts` — a console environment that feeds stdin the way the MARS command line does.
 - `core` — session tests.
 - `mips` — machine, calculator and translation tests.
+- `arm64` — AArch64 encodings against LLVM, behaviour against the CPU, machine, examples, UI pieces, speed.
 - `ui` — editor helper tests that run without a browser.
 - `golden` — the test programs and the MARS fixtures.
 

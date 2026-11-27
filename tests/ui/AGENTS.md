@@ -14,11 +14,12 @@ themselves are checked by hand in the browser.
 
 ## 3. Contents
 
-- `editor.test.ts` — line scan, source index (label kinds and declarations), section directive layout
+- `editor.test.ts` — line scan (MIPS and GNU as comments, block comments, separators), operand splitting, source index (label kinds and declarations), section directive layout
   on input, suggestions (labels by operand, registers typed without `$`), modifier-click targets, the Format transaction (cursor,
   breakpoints, undo and redo).
 - `memory.test.ts` — memory panel entries: kernel addresses, large buffers, undeclared writes,
-  unlabelled declarations under a label, reading an entry as another kind.
+  unlabelled declarations under a label, reading an entry as another kind, 8-byte integers and data
+  directive names from the ISA.
 
 ## 4. Progress
 

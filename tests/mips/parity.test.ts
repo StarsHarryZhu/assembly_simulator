@@ -1,7 +1,8 @@
 /**
  * Rules found by comparing with MARS 4.5 that the golden programs cannot pin down on their own: errors
  * whose MARS wording maps to more than one of our codes, cases where we are deliberately stricter than
- * MARS, and the file-descriptor rules (golden runs have no files).
+ * MARS, words MARS cannot read at all (its message is then just the source line), macro definition
+ * mistakes, and the file rules (golden runs have no files).
  */
 import { describe, expect, it } from 'vitest'
 import { assemble } from '../../src/isa/mips/assembler'
@@ -14,6 +15,13 @@ function errors(text: string): string[] {
   return assemble({ name: 't.asm', text })
     .diagnostics.filter((d) => d.severity === 'error')
     .map((d) => `${d.line}:${d.code}`)
+}
+
+/** Errors as "line:col code", for rules about where MARS points. */
+function located(text: string): string[] {
+  return assemble({ name: 't.asm', text })
+    .diagnostics.filter((d) => d.severity === 'error')
+    .map((d) => `${d.line}:${d.col} ${d.code}`)
 }
 
 function run(text: string, env = new ConsoleEnv()) {
@@ -40,7 +48,8 @@ describe('.eqv', () => {
 
   it('rejects macro parameters and stray tokens in the value', () => {
     expect(errors('.macro m(%v)\n.eqv K %v\n.end_macro')).toEqual(['2:bad-eqv'])
-    expect(errors('.eqv X 4 @')).toEqual(['1:bad-eqv'])
+    // MARS cannot read "@" at all: it reports that before looking at the .eqv.
+    expect(errors('.eqv X 4 @')).toEqual(['1:lexical'])
   })
 })
 
@@ -122,5 +131,87 @@ describe('files', () => {
     )
     expect([m.readRegister(S0), m.readRegister(S1), m.readRegister(S2)]).toEqual([4, -1, -1])
     expect(m.readRegister(V0)).toBe(-1)
+  })
+})
+
+describe('words MARS cannot read', () => {
+  it('are reported at the start of the word, and nothing else is', () => {
+    // Line 1 would be "too few operands", but MARS stops after reading the source.
+    expect(located('    add $t0\n1L: nop\n    li $t0, 1m')).toEqual(['2:1 lexical', '3:13 lexical'])
+    expect(located('    li $t0, a&b')).toEqual(['1:13 lexical'])
+    expect(located('    li $t0, [5] [6]')).toEqual(['1:13 lexical', '1:17 lexical'])
+    expect(located('    li $t0, 0b101')).toEqual(['1:13 lexical'])
+    // A lone minus is an operator, not an unreadable word.
+    expect(located('    li $t0, -')).toEqual(['1:13 bad-type'])
+  })
+
+  it('include malformed character literals, cut where MARS cuts them', () => {
+    expect(located("    li $t0, ''")).toEqual(['1:13 lexical', '1:14 lexical'])
+    expect(located(".data\n.byte '','ab',d0")).toEqual(['2:7 lexical', '2:10 lexical'])
+    expect(located(".data\n    .word '\\77'")).toEqual(['2:11 lexical', '2:15 lexical'])
+    expect(located(".data\n.byte '\\101','\\t','\\''")).toEqual([])
+  })
+
+  it('include a use of an .eqv name whose value is a character literal', () => {
+    expect(located(".eqv X 'a'\n    nop")).toEqual([])
+    expect(located(".eqv X 'a'\n    addi $t0, X, X")).toEqual(['2:15 lexical'])
+    // A bad word in the .eqv value is reported as such, not as a malformed .eqv.
+    expect(located(".eqv X '\\q'")).toEqual(['1:8 lexical'])
+  })
+})
+
+describe('macro definitions', () => {
+  it('reject a name that is an instruction, register, number or directive', () => {
+    for (const name of ['add', 'Add', 'mul', '$t0', '5', '.word'])
+      expect(located(`.macro ${name}\n    nop\n.end_macro`)).toEqual(['1:8 bad-macro', '3:1 bad-macro'])
+    expect(located('.macro m\n.macro li(%a %b)\n.end_macro')).toEqual(['2:8 bad-macro'])
+  })
+
+  it('drop a parameter without %, but still define the macro', () => {
+    expect(located('.macro m extra\n    nop\n.end_macro\n    m')).toEqual(['1:10 bad-macro'])
+    expect(located('.macro m(%a, $t0)\n    nop\n.end_macro\n    m(1)')).toEqual(['1:14 bad-macro'])
+  })
+
+  it('do not end at ".end_macro" followed by more text', () => {
+    expect(located('.macro m\n    nop\n.end_macro x\n    m')).toEqual(['3:1 bad-macro', '1:0 macro-unterminated'])
+    // The line stays in the body and is reported again at each call.
+    expect(located('.macro m\n    nop\n.end_macro x\n.end_macro\n    m')).toEqual(['3:1 bad-macro', '5:1 bad-macro'])
+    expect(located('.end_macro x')).toEqual(['1:1 bad-macro'])
+  })
+
+  it('report an unknown %parameter where the macro is called', () => {
+    expect(located('.macro m(%a)\n    li $t0, %b\n.end_macro\n    m(3)')).toEqual(['4:13 bad-macro', '4:13 bad-type'])
+  })
+
+  it('accept labels in any script', () => {
+    expect(located('Ünï: nop\n标签: j Ünï')).toEqual([])
+  })
+})
+
+describe('file names and reads', () => {
+  it('fail to open an empty name, ".", ".." or "/", which still take a descriptor', () => {
+    const env = new ConsoleEnv()
+    env.files.write('a.txt', new TextEncoder().encode('hi'))
+    const { m } = run(
+      '.data\ndot: .asciiz "."\nslash: .asciiz "/"\na: .asciiz "a.txt"\n.text\n' +
+        '    la $a0, dot\n    li $a1, 0\n    li $v0, 13\n    syscall\n    move $s0, $v0\n' +
+        '    la $a0, slash\n    li $a1, 1\n    li $v0, 13\n    syscall\n    move $s1, $v0\n' +
+        '    la $a0, a\n    li $a1, 0\n    li $v0, 13\n    syscall\n    move $s2, $v0\n',
+      env,
+    )
+    expect([m.readRegister(S0), m.readRegister(S1), m.readRegister(S2)]).toEqual([-1, -1, 5])
+  })
+
+  it('set $v0 for a read before finding the buffer unwritable', () => {
+    const env = new ConsoleEnv()
+    env.files.write('a.txt', new TextEncoder().encode('hello'))
+    const { m } = run(
+      '.data\na: .asciiz "a.txt"\n.text\n' +
+        '    la $a0, a\n    li $a1, 0\n    li $v0, 13\n    syscall\n    move $s0, $v0\n' +
+        '    move $a0, $s0\n    li $a1, 0x00400000\n    li $a2, 3\n    li $v0, 14\n    syscall\n',
+      env,
+    )
+    // The store into the text segment stops the program after $v0 is set.
+    expect(m.readRegister(V0)).toBe(3)
   })
 })

@@ -6,15 +6,78 @@
  */
 import { lang, t } from '../i18n'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { binGroups, floatFromBits, hex8, javaFloat } from '../../core/format'
-import type { Environment, HaltReason, IsaPlugin, LineAnalysis, RegisterSpec, StepInfo } from '../../core/isa'
-import { parseWord } from './values'
+import { bigOfBytes, binGroupsOf, floatFromBits, hex8, hexAddr, hexBits, javaFloat, signedText } from '../../core/format'
+import type { Environment, HaltReason, IsaPlugin, LineAnalysis, Machine, RegisterSpec, RegValue, StepInfo } from '../../core/isa'
+import { parseValue } from './values'
+import { loadSettings } from '../storage'
 
 const props = defineProps<{ isa: IsaPlugin; analysis: LineAnalysis }>()
 const isa = props.isa
 const specs = new Map<number, RegisterSpec>()
 for (const b of isa.registers) for (const r of b.registers) specs.set(r.id, r)
 const nameOf = (id: number) => specs.get(id)?.name ?? `#${id}`
+/** The settings chosen under Edit & run (the SVE vector length), so the demo runs the same machine. */
+const settings = loadSettings(isa)
+function makeEnv(print: (text: string) => void): Environment {
+  return {
+    print,
+    readLine: () => null,
+    readChar: () => null,
+    dialog: () => null,
+    files: { read: () => null, write: () => {}, list: () => [] },
+    now: () => Date.now(),
+  }
+}
+/** Widths of the registers that follow a setting (SVE Z and P registers), read from a machine built with it. */
+const liveBits = computed(() => {
+  const out = new Map<number, number>()
+  const p = props.analysis.program
+  if (!p) return out
+  const m = isa.createMachine(p, makeEnv(() => {}), { settings })
+  if (m.readRegisterBytes)
+    for (const [id, s] of specs) if (s.kind === 'vector' || s.kind === 'predicate') out.set(id, m.readRegisterBytes(id).length * 8)
+  return out
+})
+const bitsOf = (id: number) => liveBits.value.get(id) ?? specs.get(id)?.bits ?? 32
+const addrBits = isa.layout.addressBits ?? 32
+const hexA = (a: number) => hexAddr(a, addrBits)
+/** Addresses compared as numbers: unsigned 32-bit in a 32-bit address space, as they are in a 64-bit one. */
+const u = addrBits === 64 ? (a: number) => a : (a: number) => a >>> 0
+const wordOf = (a: number) => a - (a % 4)
+/** A float register on its own (not half of a double pair) shows and takes its value as a single. */
+const asSingle = (id: number) => specs.get(id)?.kind === 'float' && bitsOf(id) === 32 && !isPairHalf(id)
+/** A register's value; a vector or predicate register reads as one number made of its bytes. */
+function regValue(m: Machine, id: number): RegValue {
+  const spec = specs.get(id)
+  if ((spec?.kind === 'vector' || spec?.kind === 'predicate') && m.readRegisterBytes) {
+    const bytes = m.readRegisterBytes(id)
+    return bigOfBytes(bytes, 0, bytes.length)
+  }
+  return m.readRegister(id)
+}
+
+/** The narrower register inside each wider one (v1 inside z1), keyed by the wider one. */
+const narrowOf = new Map<number, number>()
+for (const [id, s] of specs) if (s.partOf != null) narrowOf.set(s.partOf, id)
+/**
+ * The registers to leave out of a list that has both names of one storage (v1 and z1): the wider name when
+ * the line does not use it, otherwise the narrower one.
+ */
+function hiddenNames(ids: Iterable<number>): Set<number> {
+  const set = new Set(ids)
+  const text = props.analysis.instructions.map((i) => i.basic).join('\n')
+  const hidden = new Set<number>()
+  for (const [wide, narrow] of narrowOf) {
+    if (!set.has(wide) || !set.has(narrow)) continue
+    hidden.add(new RegExp(`\\b${nameOf(wide)}\\b`, 'i').test(text) ? narrow : wide)
+  }
+  return hidden
+}
+/** The demo's start values, one per storage. */
+const inputs = computed(() => {
+  const hidden = hiddenNames(props.analysis.inputs.map((i) => i.id))
+  return props.analysis.inputs.filter((i) => !hidden.has(i.id))
+})
 
 const texts = reactive(new Map<number, string>())
 const cursor = ref(0)
@@ -24,17 +87,21 @@ let timer: ReturnType<typeof setInterval> | null = null
 const inputIds = computed(() => new Set(props.analysis.inputs.map((i) => i.id)))
 const isPairHalf = (id: number) => specs.get(id)?.kind === 'float' && inputIds.value.has(id ^ 1)
 
-function defaultText(id: number, value: number): string {
+function defaultText(id: number, value: RegValue): string {
   const spec = specs.get(id)
-  if (spec?.kind === 'float' && !isPairHalf(id)) return javaFloat(floatFromBits(value))
-  if (spec?.kind === 'int' && Math.abs(value | 0) < 65536) return String(value | 0)
-  return hex8(value)
+  const bits = bitsOf(id)
+  if (asSingle(id)) return javaFloat(floatFromBits(Number(value)))
+  if (spec?.kind === 'int') {
+    const n = BigInt.asIntN(bits, BigInt(value))
+    if (n > -65536n && n < 65536n) return n.toString()
+  }
+  return hexBits(value, bits)
 }
 
-function valueOf(id: number, fallback: number): number {
+function valueOf(id: number, fallback: RegValue): RegValue {
   const t = texts.get(id)
   if (t == null) return fallback
-  return parseWord(t, specs.get(id)?.kind === 'float' && !isPairHalf(id)) ?? fallback
+  return parseValue(t, bitsOf(id), asSingle(id)) ?? fallback
 }
 
 watch(
@@ -58,24 +125,21 @@ const trace = computed(() => {
   const a = props.analysis
   if (!a.program || !a.instructions.length) return null
   let output = ''
-  const env: Environment = {
-    print: (t) => {
+  const m = isa.createMachine(
+    a.program,
+    makeEnv((t) => {
       output += t
-    },
-    readLine: () => null,
-    readChar: () => null,
-    dialog: () => null,
-    files: { read: () => null, write: () => {}, list: () => [] },
-    now: () => Date.now(),
-  }
-  const m = isa.createMachine(a.program, env)
-  for (const inp of a.inputs) m.setRegister(inp.id, valueOf(inp.id, inp.value))
+    }),
+    { settings },
+  )
+  for (const inp of inputs.value) m.setRegister(inp.id, valueOf(inp.id, inp.value))
   const first = a.instructions[0]!.addr
   const end = first + 4 * a.instructions.length
-  const all = () => Array.from({ length: isa.registerCount }, (_, id) => Number(m.readRegister(id)))
+  // The ZA array of SME is too large to copy after every step and has no place in this list.
+  const all = () => Array.from({ length: isa.registerCount }, (_, id) => (specs.get(id)?.kind === 'matrix' ? 0 : regValue(m, id)))
   const regs = [all()]
   const steps: Step[] = []
-  const ids = new Set<number>(a.inputs.map((i) => i.id))
+  const ids = new Set<number>(inputs.value.map((i) => i.id))
   let note = ''
   for (let i = 0; i < a.instructions.length * 2 + 2; i++) {
     const pc = m.programCounter
@@ -84,17 +148,17 @@ const trace = computed(() => {
     const before = output.length
     let info = m.step()
     if (m.pending) {
-      note = t('这条 syscall 要等键盘输入或对话框，演示里不支持；去“编辑运行”里试试。', 'This syscall waits for keyboard input or a dialog, which the demo cannot do; try it under Edit & run.')
+      note = t('这条指令要等键盘输入或对话框，演示里不支持；去“编辑运行”里试试。', 'This instruction waits for keyboard input or a dialog, which the demo cannot do; try it under Edit & run.')
       break
     }
     const mem: Step['mem'] = []
     if (info.memory.length && !info.output) {
-      const words = [...new Set(info.memory.flatMap((c) => [(c.addr & ~3) >>> 0, ((c.addr + c.size - 1) & ~3) >>> 0]))]
+      const words = [...new Set(info.memory.flatMap((c) => [wordOf(u(c.addr)), wordOf(u(c.addr) + c.size - 1)]))]
       const after = words.map((w) => m.readWord(w))
       m.undo()
       const prior = words.map((w) => m.readWord(w))
       info = m.step()
-      words.forEach((w, j) => mem.push({ addr: w >>> 0, before: prior[j]!, after: after[j]! }))
+      words.forEach((w, j) => mem.push({ addr: w, before: prior[j]!, after: after[j]! }))
     }
     steps.push({ basic: ins?.basic ?? '?', info, mem, out: output.slice(before) })
     regs.push(all())
@@ -111,40 +175,45 @@ const trace = computed(() => {
       break
     }
   }
-  ids.delete(0)
+  if (isa.zeroRegister != null) ids.delete(isa.zeroRegister)
   ids.delete(isa.pcRegister)
-  return { steps, regs, ids: [...ids].sort((x, y) => x - y), note, first, end, output }
+  for (const id of ids) if (specs.get(id)?.kind === 'matrix') ids.delete(id)
+  const hidden = hiddenNames(ids)
+  for (const id of hidden) ids.delete(id)
+  return { steps, regs, ids: [...ids].sort((x, y) => x - y), hidden, note, first, end, output }
 })
 
-const labelAt = computed(() => new Map(props.analysis.labels.map((l) => [l.addr >>> 0, l.name])))
+const labelAt = computed(() => new Map(props.analysis.labels.map((l) => [u(l.addr), l.name])))
 
 const view = computed(() => {
   const tr = trace.value
   if (!tr) return null
   const k = Math.min(cursor.value, tr.steps.length)
   const step = k > 0 ? tr.steps[k - 1]! : null
-  const written = new Map((step?.info.writes ?? []).map((w) => [w.id, Number(w.before)]))
+  const written = new Map((step?.info.writes ?? []).map((w) => [w.id, w.before]))
   const read = new Set(step?.info.reads ?? [])
   const regs = tr.ids.map((id) => {
     const value = tr.regs[k]![id]!
     const spec = specs.get(id)
+    const bits = bitsOf(id)
+    const vector = spec?.kind === 'vector' || spec?.kind === 'predicate'
     return {
       id,
       name: nameOf(id),
-      hex: spec?.kind === 'flag' ? String(value & 1) : hex8(value),
-      groups: binGroups(value),
-      dec: spec?.kind === 'float' && !isPairHalf(id) ? javaFloat(floatFromBits(value)) : String(value | 0),
-      before: written.has(id) ? hex8(written.get(id)!) : null,
+      hex: spec?.kind === 'flag' ? String(Number(value) & 1) : hexBits(value, bits),
+      groups: vector ? [] : binGroupsOf(value, bits),
+      dec: asSingle(id) ? javaFloat(floatFromBits(Number(value))) : vector ? '' : signedText(value, bits),
+      before: written.has(id) ? hexBits(written.get(id)!, bits) : null,
       cls: written.has(id) ? 'w' : read.has(id) ? 'r' : '',
     }
   })
   let pcNote = ''
   if (step) {
-    const from = step.info.pc >>> 0
-    const to = step.info.nextPc >>> 0
+    const from = u(step.info.pc)
+    const to = u(step.info.nextPc)
     const name = labelAt.value.get(to)
-    if (to === ((from + 4) >>> 0)) pcNote = t(`PC ${hex8(from)} → ${hex8(to)}：顺序执行下一条`, `PC ${hex8(from)} → ${hex8(to)}: falls through to the next instruction`)
-    else pcNote = t(`PC ${hex8(from)} → ${hex8(to)}：跳转${name ? `到 ${name}` : ''}`, `PC ${hex8(from)} → ${hex8(to)}: jumps${name ? ` to ${name}` : ''}`)
+    if (to === u(from + 4)) pcNote = t(`PC ${hexA(from)} → ${hexA(to)}：顺序执行下一条`, `PC ${hexA(from)} → ${hexA(to)}: falls through to the next instruction`)
+    else pcNote = t(`PC ${hexA(from)} → ${hexA(to)}：跳转${name ? `到 ${name}` : ''}`, `PC ${hexA(from)} → ${hexA(to)}: jumps${name ? ` to ${name}` : ''}`)
   }
   return {
     k,
@@ -185,8 +254,9 @@ function commit(id: number, text: string) {
 onBeforeUnmount(stop)
 
 function summary(s: Step): string {
-  const parts = s.info.writes.map((w) => `${nameOf(w.id)} ← ${specs.get(w.id)?.kind === 'flag' ? Number(w.after) & 1 : hex8(Number(w.after))}`)
-  for (const m of s.mem) parts.push(`[${hex8(m.addr)}] ← ${hex8(m.after)}`)
+  const hidden = trace.value?.hidden
+  const parts = s.info.writes.filter((w) => !hidden?.has(w.id)).map((w) => `${nameOf(w.id)} ← ${specs.get(w.id)?.kind === 'flag' ? Number(w.after) & 1 : hexBits(w.after, bitsOf(w.id))}`)
+  for (const m of s.mem) parts.push(`[${hexA(m.addr)}] ← ${hex8(m.after)}`)
   return parts.join(t('，', ', ')) || t('没有改寄存器', 'no register changed')
 }
 </script>
@@ -202,9 +272,9 @@ function summary(s: Step): string {
       }}</span>
     </div>
 
-    <div v-if="analysis.inputs.length" class="init">
+    <div v-if="inputs.length" class="init">
       <span class="small muted">{{ t('初值', 'Start values') }}</span>
-      <label v-for="inp in analysis.inputs" :key="inp.id" class="iv">
+      <label v-for="inp in inputs" :key="inp.id" class="iv">
         <span class="mono small">{{ nameOf(inp.id) }}</span>
         <input
           class="inp"
@@ -240,7 +310,7 @@ function summary(s: Step): string {
 
     <p v-if="view.pcNote" class="small pc mono">{{ view.pcNote }}</p>
     <div v-if="view.step?.mem.length" class="mem">
-      <span v-for="m in view.step.mem" :key="m.addr" class="mono small memchg">{{ t('内存', 'memory') }} [{{ hex8(m.addr) }}] {{ hex8(m.before) }} → <b>{{ hex8(m.after) }}</b></span>
+      <span v-for="m in view.step.mem" :key="m.addr" class="mono small memchg">{{ t('内存', 'memory') }} [{{ hexA(m.addr) }}] {{ hex8(m.before) }} → <b>{{ hex8(m.after) }}</b></span>
     </div>
     <p v-if="view.output" class="small out">{{ t('输出：', 'Output: ') }}<span class="mono">{{ view.output }}</span></p>
     <p v-if="view.done && trace.note" class="small note">{{ trace.note }}</p>

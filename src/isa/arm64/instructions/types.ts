@@ -1,0 +1,147 @@
+/**
+ * What an instruction's semantics may do to the machine. Implemented by ../cpu.ts; instruction tables only
+ * see this interface, so the machine can change how it stores state without touching them.
+ *
+ * Register values are unsigned bigints (64-bit, or 32-bit zero-extended for W registers). Addresses passed
+ * to load and store are virtual addresses as bigints; the machine checks and translates them.
+ */
+
+import type { FpEnv } from '../softfloat'
+
+/** Access kinds for load and store. */
+export const ACC = {
+  normal: 0,
+  /** Exclusive, acquire/release and atomic accesses: the address must be aligned to the size. */
+  aligned: 1,
+  /** LDTR/STTR: at EL1 they access memory as EL0 would. */
+  unprivileged: 2,
+  /**
+   * Acquire/release and atomic accesses with FEAT_LSE2: unaligned is fine within a 16-byte block, but an
+   * access that crosses one faults.
+   */
+  lse2: 4,
+} as const
+
+export interface Cpu {
+  /** Internal address of the instruction being executed. */
+  readonly pc: number
+  /** The executing instruction's address as a virtual address. */
+  readonly pcVa: bigint
+  /** Current exception level, 0 or 1. */
+  readonly el: number
+
+  /** X register n, 31 reading as zero. */
+  x(n: number): bigint
+  /** X register n, 31 meaning SP. */
+  xsp(n: number): bigint
+  setX(n: number, v: bigint): void
+  setXsp(n: number, v: bigint): void
+  /** Register n at a width: sf 1 is 64-bit, sf 0 is the low 32 bits. 31 reads as zero. */
+  r(sf: number, n: number): bigint
+  /** Same, with 31 meaning SP. */
+  rsp(sf: number, n: number): bigint
+  /** Write register n at a width (a W write clears the upper 32 bits). 31 discards. */
+  setR(sf: number, n: number, v: bigint): void
+  /** Same, with 31 meaning SP. */
+  setRsp(sf: number, n: number, v: bigint): void
+  /** The base address register of a load or store: 31 is SP, which must then be 16-byte aligned. */
+  base(n: number): bigint
+
+  /** N Z C V as bits 3..0. */
+  flags(): number
+  setFlags(nzcv: number): void
+  /** Whether a condition (0–15) holds. */
+  cond(c: number): boolean
+
+  /** Continue at pc + offset (bytes). */
+  branchRel(offset: number): void
+  /** Continue at an address held in a register. */
+  branchTo(target: bigint): void
+
+  load(addr: bigint, size: number, acc?: number): bigint
+  /** A load that reports a fault as null instead of taking it (SVE's first-fault and non-fault loads). */
+  tryLoad(addr: bigint, size: number): bigint | null
+  store(addr: bigint, size: number, value: bigint, acc?: number): void
+
+  /** Raise an undefined instruction exception; `why` explains it when the encoding exists but this use does not. */
+  undefinedInstr(why?: string): never
+  /** SVC: a Linux system call. */
+  svc(imm: number): void
+  /** BRK: a breakpoint exception. */
+  brk(imm: number): never
+  /** ERET. */
+  eret(): void
+  /** MRS. */
+  sysRead(enc: number): bigint
+  /** MSR (register). */
+  sysWrite(enc: number, v: bigint): void
+  /** MSR (immediate): a PSTATE field. */
+  pstate(op1: number, op2: number, crm: number): void
+  /** SYS (DC, IC, AT, TLBI): only DC ZVA changes memory. */
+  sysOp(op1: number, crn: number, crm: number, op2: number, rt: number): void
+
+  /** The low `bytes` bytes of SIMD&FP register n (a copy). */
+  vread(n: number, bytes: number): Uint8Array
+  /** Write the low bytes of SIMD&FP register n; the rest of the register becomes zero. */
+  vwrite(n: number, data: Uint8Array): void
+  /** The low `bytes` bytes of register n as elements of size es (0–4 for 8 to 128 bits), unsigned. */
+  vlanes(n: number, bytes: number, es: number): bigint[]
+  /** Write elements of size es to the low bytes of register n (each truncated); the rest becomes zero. */
+  vsetLanes(n: number, vals: bigint[], es: number): void
+  /** The low `bytes` bytes of SIMD&FP register n as an unsigned number. */
+  vget(n: number, bytes: number): bigint
+  /**
+   * Write a scalar to the low `bytes` bytes of register n, zeroing the rest; with `merge` and FPCR.NEP set
+   * (FEAT_AFP), the rest comes from register `merge` instead.
+   */
+  vset(n: number, bytes: number, v: bigint, merge?: number): void
+  /**
+   * The vector length in effect, in bytes (VL / 8; in Streaming SVE mode the streaming length SVL / 8): a Z
+   * register's size; vread(n, vl) and vwrite read and write one.
+   */
+  readonly vl: number
+  /** The streaming vector length in bytes (SVL / 8) in either mode: ZA has svl rows of svl bytes. */
+  readonly svl: number
+  /** Row r (0 to svl − 1) of the ZA array, svl bytes (a copy). */
+  zaRead(r: number): Uint8Array
+  /** Write row r of the ZA array. */
+  zaWrite(r: number, data: Uint8Array): void
+  /** Row r of the ZA array as elements of size es, unsigned. */
+  zaLanes(r: number, es: number): bigint[]
+  /** Write row r of the ZA array from elements of size es (each truncated). */
+  zaSetLanes(r: number, vals: bigint[], es: number): void
+  /** ZT0's 64 bytes (a copy). */
+  zt0Read(): Uint8Array
+  zt0Write(data: Uint8Array): void
+  /** Predicate register n (0–15, 16 for FFR) as one 0/1 byte per vector byte (vl entries). */
+  pread(n: number): Uint8Array
+  /** Write predicate n (16 for FFR) from one 0/1 byte per vector byte. */
+  pwrite(n: number, bits: Uint8Array): void
+  /** Predicate n as one flag per element of size es: the bit of each element's first byte. */
+  pflags(n: number, es: number): boolean[]
+  /** Write predicate n (16 for FFR): element i's first bit from flags[i], every other bit zero. */
+  psetFlags(n: number, flags: boolean[], es: number): void
+  /**
+   * The `size` bytes at addr when all of them can be read without a fault, else null and nothing happens:
+   * the caller then makes its element accesses one at a time, so a fault names the right element.
+   */
+  loadBlock(addr: bigint, size: number): Uint8Array | null
+  /** Store data at addr when all of it can be written without a fault; says whether it did (else nothing happens). */
+  storeBlock(addr: bigint, data: Uint8Array): boolean
+  /** A floating-point environment holding FPCR, for one instruction's soft-float calls. */
+  fpEnv(): FpEnv
+  /** FPCR without marking it read (for instructions that only look at a control bit). */
+  readonly fpcr: number
+  /** Add the environment's exception flags to FPSR. */
+  fpFlags(env: FpEnv): void
+  /** Set FPSR.QC (a saturating instruction saturated). */
+  setQC(): void
+
+  /** The exclusive monitor of LDXR/STXR. */
+  markExclusive(addr: bigint, size: number): void
+  /** Whether the monitor still covers the address; clears it either way. */
+  checkExclusive(addr: bigint, size: number): boolean
+  clearExclusive(): void
+}
+
+export type Fields = Record<string, number>

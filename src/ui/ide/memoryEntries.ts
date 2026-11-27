@@ -13,7 +13,7 @@
  * Every entry can be read as another kind (a .space buffer as words or as text, a word as its bytes); the
  * summary and the rows follow that view.
  */
-import { charOf, doubleFromBits, floatFromBits, hex8, hexN, javaDouble, javaFloat } from '../../core/format'
+import { charOf, doubleFromBits, floatFromBits, hex16, hex8, hexN, javaDouble, javaFloat } from '../../core/format'
 import type { DataKind, IsaPlugin, Machine, MemChange, Program } from '../../core/isa'
 import { t } from '../i18n'
 
@@ -37,6 +37,7 @@ export interface MemoryEntry {
 }
 
 export const KIND_TITLE: Record<DataKind, string> = {
+  dword: '.dword',
   word: '.word',
   half: '.half',
   byte: '.byte',
@@ -47,7 +48,23 @@ export const KIND_TITLE: Record<DataKind, string> = {
   double: '.double',
 }
 
-export const ELEM: Record<DataKind, number> = { word: 4, half: 2, byte: 1, ascii: 1, asciiz: 1, space: 1, float: 4, double: 8 }
+/** The directive that declares a kind of data in this ISA's assembler (`.hword` rather than `.half` in GNU as). */
+export function kindTitle(isa: IsaPlugin, kind: DataKind): string {
+  return isa.language.dataDirectives?.[kind] ?? KIND_TITLE[kind]
+}
+
+/**
+ * Addresses as the memory panel compares them: unsigned 32-bit numbers in a 32-bit address space, as they
+ * are in a 64-bit one (`>>> 0` would cut them to 32 bits there).
+ */
+export function addressNormalizer(isa: IsaPlugin): (a: number) => number {
+  return isa.layout.addressBits === 64 ? (a) => a : (a) => a >>> 0
+}
+
+/** The address of the 4-byte word holding `a`; arithmetic rather than `& ~3`, which only works below 2^31. */
+const wordOf = (a: number) => a - (a % 4)
+
+export const ELEM: Record<DataKind, number> = { dword: 8, word: 4, half: 2, byte: 1, ascii: 1, asciiz: 1, space: 1, float: 4, double: 8 }
 
 const TEXT = new Set<DataKind>(['ascii', 'asciiz'])
 
@@ -73,6 +90,12 @@ export function elementText(isa: IsaPlugin, m: Machine, kind: DataKind, a: numbe
     case 'float': {
       const w = m.readWord(a)
       return { hex: hex8(w), value: javaFloat(floatFromBits(w)) }
+    }
+    case 'dword': {
+      const lo = BigInt(m.readWord(a) >>> 0)
+      const hi = BigInt(m.readWord(a + 4) >>> 0)
+      const v = (hi << 32n) | lo
+      return { hex: hex16(v), value: BigInt.asIntN(64, v).toString() }
     }
     case 'double': {
       const lo = m.readWord(a)
@@ -105,7 +128,7 @@ function summary(isa: IsaPlugin, m: Machine, e: Base, view: DataKind, written: n
     // .space starts as zeros, so only the words written since can make it non-zero.
     let zeros = true
     const end = e.addr + e.size
-    for (let i = lowerBound(written, (e.addr & ~3) >>> 0); ever && zeros && i < written.length && written[i]! < end; i++) {
+    for (let i = lowerBound(written, wordOf(e.addr)); ever && zeros && i < written.length && written[i]! < end; i++) {
       for (let b = 0; b < 4; b++) {
         const a = written[i]! + b
         if (a >= e.addr && a < end && m.readByte(a)) zeros = false
@@ -157,11 +180,12 @@ export function memoryEntries(
   touched: MemChange[],
   views?: ReadonlyMap<string, DataKind>,
 ): MemoryEntry[] {
+  const u = addressNormalizer(isa)
   const entries: Base[] = []
   // Per segment: the entry of the last declaration, the label it belongs to, and where it ends.
   const chain = new Map<string, { entry: Base; label: string | null; labelAddr: number; end: number }>()
   for (const d of p.declarations) {
-    const addr = d.addr >>> 0
+    const addr = u(d.addr)
     const prev = chain.get(d.segment)
     // Only alignment padding (under 8 bytes) may lie between this declaration and the one before.
     const follows = !!prev && addr >= prev.end && addr - prev.end < 8
@@ -187,8 +211,11 @@ export function memoryEntries(
     entries.push(entry)
     chain.set(d.segment, { entry, ...owner, end: addr + d.size })
   }
+  // Undeclared memory is shown in the machine's word size: doublewords on a 64-bit ISA.
+  const unit = isa.layout.wordSize === 8 ? 8 : 4
+  const unitKind: DataKind = unit === 8 ? 'dword' : 'word'
   for (const h of m.heapBlocks()) {
-    entries.push({ key: `h${h.addr}`, title: t(`堆块 #${h.index + 1}`, `heap block #${h.index + 1}`), kind: 'word', addr: h.addr >>> 0, size: h.size, count: Math.ceil(h.size / 4), note: 'sbrk', line: null })
+    entries.push({ key: `h${h.addr}`, title: t(`堆块 #${h.index + 1}`, `heap block #${h.index + 1}`), kind: unitKind, addr: u(h.addr), size: h.size, count: Math.ceil(h.size / unit), note: h.note ?? 'sbrk', line: null })
   }
 
   // Written words outside every entry above, the stack and the text segment, grouped into runs. Both
@@ -201,8 +228,9 @@ export function memoryEntries(
   let run: number[] = []
   const flush = () => {
     if (!run.length) return
-    const a = run[0]!
-    others.push({ key: `w${a}`, title: t('其他写入', 'other writes'), kind: 'word', addr: a, size: run.length * 4, count: run.length, note: t('未声明', 'undeclared'), line: null })
+    const a = run[0]! - (run[0]! % unit)
+    const size = Math.ceil((run[run.length - 1]! + 4 - a) / unit) * unit
+    others.push({ key: `w${a}`, title: t('其他写入', 'other writes'), kind: unitKind, addr: a, size, count: size / unit, note: t('未声明', 'undeclared'), line: null })
     run = []
   }
   let j = 0
@@ -210,7 +238,7 @@ export function memoryEntries(
   for (const a of written) {
     while (j < spans.length && spans[j]![0] < a + 4) reach = Math.max(reach, spans[j++]![1])
     const covered = reach > a
-    if (covered || (stack && a >= stack.start >>> 0 && a <= stack.end >>> 0) || a < lowest) continue
+    if (covered || (stack && a >= u(stack.start) && a <= u(stack.end)) || a < lowest) continue
     if (run.length && a !== run[run.length - 1]! + 4) flush()
     run.push(a)
   }
@@ -219,8 +247,8 @@ export function memoryEntries(
 
   return all.map((e) => {
     const end = e.addr + Math.max(e.size, 1)
-    const flash = touched.some((c) => c.addr >>> 0 < end && (c.addr >>> 0) + c.size > e.addr)
-    const first = lowerBound(written, (e.addr & ~3) >>> 0)
+    const flash = touched.some((c) => u(c.addr) < end && u(c.addr) + c.size > e.addr)
+    const first = lowerBound(written, wordOf(e.addr))
     const ever = first < written.length && written[first]! < end
     const view = views?.get(e.key) ?? e.kind
     return { ...e, view, flash, ever, summary: summary(isa, m, e, view, written, ever) }

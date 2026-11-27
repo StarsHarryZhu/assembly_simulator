@@ -16,7 +16,9 @@ generated from it, so they cannot drift apart.
 - Operand matching follows MARS's token classes (5-bit, unsigned 16-bit, signed 16-bit, 32-bit) and
   its form order: basic forms first, then pseudo forms, first match wins.
 - Diagnostic and halt `code`s are stable identifiers; messages are bilingual through `L()`.
-- Hot paths in `cpu.ts` avoid allocation per step (undo records are recycled from a ring).
+- Hot paths in `cpu.ts` avoid allocation per step: undo records are recycled from a ring, and their lists
+  are refilled through counters (`regN`, `statusN`, `memN`, `readN`), never truncated or pushed. Written-word
+  counts live in one `Uint32Array` per 4 KB page.
 - Addresses above 0x7fffffff are kept unsigned (`>>> 0`) wherever they index or loop: `a & ~3` alone
   turns kernel and MMIO addresses negative.
 - A failed syscall throws through `syscallFault` (cause 8) so a `.ktext` handler can catch it, as in MARS.
@@ -62,3 +64,16 @@ character); a `.eqv` value may not use a macro parameter; an sbrk request that w
 0x7fffffff fails (MARS returns memory it cannot back). Differential runs against MARS 4.5 (about
 50k instruction lines, 8k data lines, 2000 random programs, 130 syscall cases and the segment,
 macro and exception edge cases now in `tests/golden/programs`) show no other difference.
+Phase 5 deep check (about 7,000 more programs: input and file syscalls, sbrk, random streams, 12.8k pseudo
+and basic forms, data directives, malformed lines, macros, `.eqv` and labels): fixed reading reals as
+Java does (syscalls 6 and 7, dialog 52), file reads that fault after setting `$v0`, opening `""`, `.`,
+`..` or `/`, numbers with leading zeros, hex floats and NaN/Infinity, signs after labels, labels in any
+script, lexical errors that stop assembly as in MARS, error columns after `.eqv` substitution, MARS's
+macro rules, data directives continued on the next line, and undo of file syscalls and random streams.
+Different from MARS on purpose, where MARS misbehaves: a double-precision operation on an odd register
+stops the program even when a `.ktext` handler exists (MARS enters the handler without setting EPC or
+Cause); `lwl`, `lwr`, `swl`, `swr`, `ulw` and `usw` above 0x80000000 use the address's real alignment
+(MARS takes a signed remainder); `c.x.s`/`bc1t` with condition flag 8 to 31 use flag n & 7 throughout
+(MARS encodes n & 7 but runs with n). MARS reports each unreadable word twice; we report it once.
+Phase 5 speed work (the built engine in Node on an Apple M5): about 14 → 40–55 million instructions per
+second, from step-log counters and per-page written-word counts; the deep-check fixtures replay unchanged.
