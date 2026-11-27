@@ -178,6 +178,7 @@ const aimm: OperandType<{ neg: boolean }> = {
     const at = s.pos
     const { value, reloc } = relocValue(s, ['lo12'])
     let v = reloc === 'lo12' ? value & 0xfffn : value
+    if (s.isPunct(',') && s.word(1) === 'lsl' && !s.plainStart(at)) s.fail(L('后面跟 lsl 的立即数要以 # 或数字开头', 'An immediate followed by lsl must start with # or a number'), true, at)
     if (a.neg) {
       if (v >= 0n) s.fail(L('这里要负数', 'A negative number is expected here'), false, at)
       v = -v
@@ -395,8 +396,8 @@ const ext: OperandType<{ rd: boolean }> = {
         if (option < 0) s.fail(L('这里应该是扩展方式，例如 uxtw、sxtw、uxtx', 'Expected an extend such as uxtw, sxtw, uxtx'))
       }
       s.pos++
-      if (s.isPunct('#') || s.startsValue()) {
-        s.eat('#')
+      if (s.hasAmount()) {
+        s.amountHash()
         const v = s.expr()
         if (v < 0n || v > 4n) s.fail(L('扩展后的移位只能是 0 到 4', 'The shift after an extend must be 0 to 4'), true, at)
         amount = Number(v)
@@ -488,8 +489,7 @@ const sh12: OperandType<null> = {
   kind: 'imm',
   parse(s: OperandStream, f: Fields) {
     const at = s.pos
-    if (!s.startsValue()) s.fail(L('这里应该是 0 或 12', 'Expected 0 or 12'))
-    const v = s.expr()
+    const v = s.plainAmount()
     if (v !== 0n && v !== 12n) s.fail(L('这里只能左移 0 或 12', 'The shift must be 0 or 12'), true, at)
     unify(s, f, 'sh', v === 12n ? 1 : 0)
   },
@@ -549,11 +549,12 @@ const regoff: OperandType<{ size: number }> = {
       else if (w === 'sxtx') option = 7
       else s.fail(L('这里应该是 lsl、uxtw、sxtw 或 sxtx', 'Expected lsl, uxtw, sxtw or sxtx'))
       s.pos++
-      if (s.isPunct('#') || s.startsValue()) {
-        s.eat('#')
+      if (s.hasAmount()) {
+        s.amountHash()
         const v = s.expr()
         if (v !== 0n && v !== BigInt(a.size)) s.fail(L(`移位量只能是 0 或 ${a.size}`, `The shift must be 0 or ${a.size}`), true, at)
-        S = a.size === 0 ? (s.toks[s.pos - 1]?.kind === 'num' ? 1 : 0) : v === 0n ? 0 : 1
+        // A written amount sets S even when it is #0 (for bytes, the only amount).
+        S = a.size === 0 ? 1 : v === 0n ? 0 : 1
       } else if (w === 'lsl') s.fail(L('lsl 后面要写移位量', 'lsl needs a shift amount'))
     }
     const wantX = (option & 1) === 1
@@ -662,7 +663,7 @@ const barrier: OperandType<{ isb: boolean }> = {
       v = Number(e[0])
       s.pos++
     } else {
-      s.eat('#')
+      s.numberHash()
       const at = s.pos
       const x = s.expr()
       if (x < 0n || x > 15n) s.fail(L('屏障选项只能是 0 到 15', 'The barrier option must be 0 to 15'), true, at)
@@ -696,7 +697,7 @@ const nxs: OperandType<null> = {
       if (v < 0) s.fail(L('这里应该是 oshnxs、nshnxs、ishnxs 或 synxs', 'Expected oshnxs, nshnxs, ishnxs or synxs'))
       s.pos++
     } else {
-      s.eat('#')
+      s.numberHash()
       const at = s.pos
       const x = s.expr()
       if (x !== 16n && x !== 20n && x !== 24n && x !== 28n) s.fail(L('这里只能是 #16、#20、#24 或 #28', 'Only #16, #20, #24 or #28 is allowed here'), true, at)
@@ -734,7 +735,7 @@ const prfop: OperandType<null> = {
       v = (PRF_TYPES.indexOf(m[1]!) << 3) | (PRF_TARGETS.indexOf(m[2]!) << 1) | (m[3] === 'strm' ? 1 : 0)
       s.pos++
     } else {
-      s.eat('#')
+      s.numberHash()
       const at = s.pos
       const x = s.expr()
       if (x < 0n || x > 31n) s.fail(L('预取操作只能是 0 到 31', 'The prefetch operation must be 0 to 31'), true, at)

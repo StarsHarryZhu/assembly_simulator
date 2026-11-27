@@ -27,7 +27,8 @@ import {
   type Spans,
 } from './syntax'
 
-export type Exec = (c: Cpu, f: Fields) => void
+/** An instruction's semantics; `p` is what its `prepare` made of the fields (undefined without one). */
+export type Exec = (c: Cpu, f: Fields, p: any) => void
 
 /**
  * What an instruction needs of PSTATE (checked by the machine before it runs): Streaming SVE mode (most SME
@@ -58,6 +59,11 @@ export interface InstrSpec {
   example?: string
   desc: Text
   exec: Exec
+  /**
+   * Values that depend only on the fields (masks, decoded immediates), worked out once when the machine loads
+   * the instruction instead of on every execution; exec receives them as `p`.
+   */
+  prepare?: (f: Fields) => unknown
   /** Explanations for the decoder. */
   notes?: (f: Fields, pc: number) => string[]
   /** NEED bits: the PSTATE.SM and PSTATE.ZA it requires (a function when they depend on the fields). */

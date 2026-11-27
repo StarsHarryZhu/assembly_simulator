@@ -94,11 +94,17 @@ export function applyState(m: ArmMachine, s: NativeState, ptr: number[], vs: Vec
   m.setRegister(FPSR_ID, 0n)
 }
 
+/**
+ * The first state seed of a run: the committed fixtures use `base`; another generator seed (a deeper
+ * check with SEED=…) moves the states too, so it tries new starting values as well as new words.
+ */
+const firstSeed = (base: number, seed: number, standard: number) => (seed === standard ? base : base + seed * 2_000_000)
+
 export function nativeCases(perInstr = 8, seed = 11): NativeCase[] {
   loadTables()
   const rand = rng(seed)
   const out: NativeCase[] = []
-  let caseSeed = 1000
+  let caseSeed = firstSeed(1000, seed, 11)
   for (const ins of allInstrs()) {
     const group = ins.spec.group
     if (!GROUPS.has(group) || SKIP.test(ins.spec.mnemonic) || ins.spec.feature === 'pauth' || ABSENT.has(ins.spec.feature ?? '')) continue
@@ -166,7 +172,7 @@ export function sveCases(vl: number, perInstr = 6, seed = 13): NativeCase[] {
   loadTables()
   const rand = rng(seed)
   const out: NativeCase[] = []
-  let caseSeed = 500000
+  let caseSeed = firstSeed(500000, seed, 13)
   for (const ins of allInstrs()) {
     const group = ins.spec.group
     if (!SVE_GROUPS.has(group)) continue
@@ -230,7 +236,7 @@ export function smeCases(svl: number, perInstr = 3, seed = 19): NativeCase[] {
   loadTables()
   const rand = rng(seed)
   const out: NativeCase[] = []
-  let caseSeed = 800000
+  let caseSeed = firstSeed(800000, seed, 19)
   for (const ins of allInstrs()) {
     const group = ins.spec.group
     if (!SME_GROUPS.has(group) || SME_SKIP.has(ins.spec.id)) continue

@@ -8,7 +8,7 @@
 import { T, type Text } from '../../../core/i18n'
 import { NEED, type AliasSpec, type InstrSpec } from '../encoding/table'
 import type { Cpu, Fields } from './types'
-import { ESIZE, sx, ux } from './vec'
+import { ESIZE, lo32, sx, ux } from './vec'
 import { pget, zget, zset } from './zvec'
 import { sliceAt, sliceGet, sliceSet, tileDim, tileOff, tileRows, zaEnv, zaGet, zaSet, zaVectors } from './zavec'
 import { bfDotAdd } from './simd-fp'
@@ -89,6 +89,9 @@ for (const [m, v, what] of [
 
 type Env = sf.FpEnv
 
+/** The `on` flags of a single active product. */
+const ONE = [true]
+
 /**
  * Tile += (or −=) the outer product of Zn and Zm, `k` elements of Zn and Zm per tile element (k > 1: a sum
  * of k products). `pair(acc, rowEls, colEls, on)` combines the k pairs, `on[p]` telling which are active.
@@ -100,16 +103,24 @@ function outer(c: Cpu, f: Fields, tes: number, ses: number, t: number, op: (acc:
   const N = zget(c, f.Zn!, ses)
   const M = zget(c, f.Zm!, ses)
   const d = tileDim(c, tes)
-  const rows = Array.from({ length: d }, (_, i) => pn.slice(i * k, i * k + k).some(Boolean))
-  tileRows(c, tes, t, rows, (i, row) =>
-    row.map((acc, j) => {
-      const pa = pn.slice(i * k, i * k + k)
-      const pb = pm.slice(j * k, j * k + k)
+  // Each row's and each column's k source elements and predicate bits, cut once.
+  const chunks = <T,>(xs: T[]) => Array.from({ length: d }, (_, i) => xs.slice(i * k, i * k + k))
+  const [PA, PB, NA, MB] = [chunks(pn), chunks(pm), chunks(N), chunks(M)]
+  const rows = PA.map((pa) => pa.some(Boolean))
+  tileRows(c, tes, t, rows, (i, row) => {
+    const pa = PA[i]!
+    for (let j = 0; j < d; j++) {
+      const pb = PB[j]!
+      // One product per element (k = 1): active when both bits are, and no flags to build.
+      if (k === 1) {
+        if (pa[0] && pb[0]) row[j] = op(row[j]!, NA[i]!, MB[j]!, ONE, pa, pb)
+        continue
+      }
       const on = pa.map((x, p) => x && pb[p]!)
-      if (!on.some(Boolean)) return acc
-      return op(acc, N.slice(i * k, i * k + k), M.slice(j * k, j * k + k), on, pa, pb)
-    }),
-  )
+      if (on.some(Boolean)) row[j] = op(row[j]!, NA[i]!, MB[j]!, on, pa, pb)
+    }
+    return row
+  })
 }
 
 interface Mop {
@@ -132,8 +143,34 @@ function fmop(es: number, sub: boolean): (c: Cpu, f: Fields) => void {
   return (c, f) => {
     const env = zaEnv(c)
     const t = fmtOf(es)
+    if (es === 2 && sf.nativeOk(env)) return fmop32(c, f, env, sub)
     outer(c, f, es, es, f.ZAda!, (acc, a, b) => sf.fpMulAdd(env, t, acc, sub ? sf.fpNeg(env, t, a[0]!) : a[0]!, b[0]!))
   }
+}
+
+/**
+ * Single-precision FMOPA and FMOPS on the native path: each source element is converted once, and each tile
+ * element takes one multiply-add on numbers. An element whose operands are not all normal or zero, or
+ * whose result the native path cannot round, goes to fpMulAdd, so every result is the one it gives.
+ */
+function fmop32(c: Cpu, f: Fields, env: Env, sub: boolean): void {
+  const pn = pget(c, f.Pn!, 2)
+  const pm = pget(c, f.Pm!, 2)
+  const N = zget(c, f.Zn!, 2).map((x) => (sub ? sf.fpNeg(env, sf.F32, x) : x))
+  const M = zget(c, f.Zm!, 2)
+  const NV = N.map((x) => sf.value32(x))
+  const MV = M.map((x) => sf.value32(x))
+  tileRows(c, 2, f.ZAda!, pn, (i, row) => {
+    const a = NV[i]!
+    for (let j = 0; j < row.length; j++) {
+      if (!pm[j]) continue
+      const acc = row[j]!
+      const b = MV[j]!
+      const cv = a === null || b === null ? null : sf.value32(acc)
+      row[j] = (cv === null ? null : sf.fma32Values(env, cv, a!, b!)) ?? sf.fpMulAdd(env, sf.F32, acc, N[i]!, M[j]!)
+    }
+    return row
+  })
 }
 
 /**
@@ -165,18 +202,42 @@ function bfmopH(sub: boolean): (c: Cpu, f: Fields) => void {
   }
 }
 
-/** Integer sums of k products (signedness per operand), added or subtracted. */
+/**
+ * Integer sums of k products (signedness per operand), added or subtracted. The sources have 8- or 16-bit
+ * elements, so each sum of products is exact as a number (below 2^35); only the tile element is a bigint.
+ * A tile element changes when at least one of its k products is active, and takes only the active ones.
+ */
 function imop(tes: number, ses: number, uN: boolean, uM: boolean, sub: boolean): (c: Cpu, f: Fields) => void {
-  return (c, f) =>
-    outer(c, f, tes, ses, f.ZAda!, (acc, a, b, on) => {
-      let s = acc
-      a.forEach((x, p) => {
-        if (!on[p]) return
-        const prod = (uN ? x : sx(x, ses)) * (uM ? b[p]! : sx(b[p]!, ses))
-        s = sub ? s - prod : s + prod
-      })
-      return ux(s, tes)
+  const shift = 32 - ESIZE[ses]!
+  const num = (x: bigint, unsigned: boolean) => (unsigned ? lo32(x) : (lo32(x) << shift) >> shift)
+  return (c, f) => {
+    const k = 1 << (tes - ses)
+    const pn = pget(c, f.Pn!, ses)
+    const pm = pget(c, f.Pm!, ses)
+    // Inactive elements as 0, so their products add nothing; each row's and column's k predicate bits.
+    const NV = zget(c, f.Zn!, ses).map((x, i) => (pn[i] ? num(x, uN) : 0))
+    const MV = zget(c, f.Zm!, ses).map((x, i) => (pm[i] ? num(x, uM) : 0))
+    const d = tileDim(c, tes)
+    const bits = (p: boolean[], i: number) => {
+      let m = 0
+      for (let q = 0; q < k; q++) if (p[i * k + q]) m |= 1 << q
+      return m
+    }
+    const RB = Array.from({ length: d }, (_, i) => bits(pn, i))
+    const CB = Array.from({ length: d }, (_, j) => bits(pm, j))
+    tileRows(c, tes, f.ZAda!, RB.map((m) => m !== 0), (i, row) => {
+      const rb = RB[i]!
+      for (let j = 0; j < d; j++) {
+        if (!(rb & CB[j]!)) continue
+        let s = 0
+        for (let p = 0, a = i * k, b = j * k; p < k; p++) s += NV[a + p]! * MV[b + p]!
+        if (sub) s = -s
+        // A 32-bit element adds as a number (exact below 2^53); a 64-bit one as a bigint.
+        row[j] = tes === 2 ? BigInt((lo32(row[j]!) + s) >>> 0) : ux(row[j]! + BigInt(s), tes)
+      }
+      return row
     })
+  }
 }
 
 const popcount = (v: bigint) => {
@@ -376,13 +437,16 @@ for (let es = 0; es <= 3; es++) {
     const za = `ZAo:${zw}`
     const sel = n === 2 ? '000' : '001'
     const list = `<LM:Zd:${n}:${L}>`
+    // A tile can have fewer slices than registers (four .d slices at SVL 128): the slices then wrap round
+    // the tile like the first one, instead of running past it.
     const tileToVec = (zero: boolean) => (c: Cpu, f: Fields) => {
       const { t, i, v } = slicePos(c, f, es, zw, n)
+      const dim = tileDim(c, es)
       const base = i - (i % n)
       for (let k = 0; k < n; k++) {
-        const s = sliceGet(c, es, t, v, base + k)
+        const s = sliceGet(c, es, t, v, (base + k) % dim)
         zset(c, f.Zd! * n + k, s, es)
-        if (zero) sliceSet(c, es, t, v, base + k, s.map(() => 0n))
+        if (zero) sliceSet(c, es, t, v, (base + k) % dim, s.map(() => 0n))
       }
     }
     for (const zero of [false, true])
@@ -408,8 +472,9 @@ for (let es = 0; es <= 3; es++) {
       desc: T(`把 ${n} 个 z 寄存器写进 tile 的 ${n} 行（h）或 ${n} 列（v）`, `Write ${n} z registers into ${n} rows (h) or columns (v) of a tile`),
       exec(c, f) {
         const { t, i, v } = slicePos(c, f, es, zw, n)
+        const dim = tileDim(c, es)
         const base = i - (i % n)
-        for (let k = 0; k < n; k++) sliceSet(c, es, t, v, base + k, zget(c, f.Zn! * n + k, es))
+        for (let k = 0; k < n; k++) sliceSet(c, es, t, v, (base + k) % dim, zget(c, f.Zn! * n + k, es))
       },
     })
     ALIASES.push(

@@ -89,6 +89,16 @@ const pairCheck = (f: Fields) => {
   if (f.Rt === f.Rt2) return L('读两个寄存器时，两个目标不能相同（结果不可预测）', 'A load pair cannot use the same register twice (UNPREDICTABLE)')
 }
 
+/**
+ * The same choices when the machine meets such a word (the assembler refuses most of them, but a word can
+ * still come from data): the architecture lets each be UNDEFINED, and the CPU we check against makes every
+ * one so, for loads and stores alike, so they raise SIGILL here too, before any memory is touched.
+ */
+function wbUndefined(c: Cpu, f: Fields) {
+  if (f.Rn !== 31 && (f.Rt === f.Rn || (f.Rt2 !== undefined && f.Rt2 === f.Rn)))
+    c.undefinedInstr(L('写回的基址寄存器同时也是要读写的寄存器', 'the writeback base is also a transferred register'))
+}
+
 for (const [size, opc] of KINDS) {
   const k = kindOf(size, opc)!
   const id = (form: string) => `${mnemonic(k, form === 'ur' ? 'ur' : form === 'tr' ? 'tr' : 'r')}-${form}-${sizeKey(k)}`
@@ -141,6 +151,7 @@ for (const [size, opc] of KINDS) {
     check: wbCheck(k.op !== 'st'),
     desc: kindDesc(k, T('后变址：用 Xn 访问，然后 Xn += 偏移', 'post-index: access at Xn, then Xn += offset')),
     exec: (c, f) => {
+      wbUndefined(c, f)
       const addr = c.base(f.Rn!)
       access(c, k, f, addr)
       c.setXsp(f.Rn!, (addr + BigInt(sext(f.imm9!, 9))) & M64)
@@ -155,6 +166,7 @@ for (const [size, opc] of KINDS) {
     check: wbCheck(k.op !== 'st'),
     desc: kindDesc(k, T('前变址：先 Xn += 偏移，再用新的 Xn 访问', 'pre-index: Xn += offset, then access at the new Xn')),
     exec: (c, f) => {
+      wbUndefined(c, f)
       const addr = (c.base(f.Rn!) + BigInt(sext(f.imm9!, 9))) & M64
       access(c, k, f, addr)
       c.setXsp(f.Rn!, addr)
@@ -217,6 +229,8 @@ const PAIRS: PairKind[] = [
 ]
 
 function pairAccess(c: Cpu, p: PairKind, f: Fields, addr: bigint) {
+  // Loading one register twice is UNPREDICTABLE; the CPU we check against makes it UNDEFINED.
+  if (p.L && f.Rt === f.Rt2) c.undefinedInstr(L('两个目标寄存器相同', 'both destinations are the same register'))
   const bytes = p.x && !p.sw ? 8 : 4
   const a2 = (addr + BigInt(bytes)) & M64
   if (!p.L) {
@@ -254,6 +268,7 @@ for (const p of PAIRS) {
     check: p.sw ? pairCheck : wbCheck(!!p.L),
     desc: pairDesc(p, T('后变址', 'post-index')),
     exec: (c, f) => {
+      wbUndefined(c, f)
       const addr = c.base(f.Rn!)
       pairAccess(c, p, f, addr)
       c.setXsp(f.Rn!, (addr + BigInt(sext(f.imm7!, 7) * scale)) & M64)
@@ -278,6 +293,7 @@ for (const p of PAIRS) {
     check: p.sw ? undefined : wbCheck(!!p.L),
     desc: pairDesc(p, T('前变址，函数开头常用 stp x29, x30, [sp, #-16]!', 'pre-index, as in stp x29, x30, [sp, #-16]! at function entry')),
     exec: (c, f) => {
+      wbUndefined(c, f)
       const addr = (c.base(f.Rn!) + BigInt(sext(f.imm7!, 7) * scale)) & M64
       pairAccess(c, p, f, addr)
       c.setXsp(f.Rn!, addr)

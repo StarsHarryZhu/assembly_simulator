@@ -496,9 +496,9 @@ const imm8sh: OperandType<{ signed: boolean; es: Es | null }> = {
     let v = BigInt.asIntN(bits, elementValue(s, bits))
     let shift: number | null = null
     if (s.isPunct(',') && s.word(1) === 'lsl') {
+      if (!s.plainStart(at)) s.fail(L('后面跟 lsl 的立即数要以 # 或数字开头', 'An immediate followed by lsl must start with # or a number'), true, at)
       s.pos += 2
-      s.eat('#')
-      const sh = Number(s.expr())
+      const sh = Number(s.plainAmount())
       if (sh !== 0 && sh !== 8) s.fail(L('这里只能左移 0 或 8 位', 'Only lsl #0 or lsl #8 is allowed here'), true)
       shift = sh / 8
     }
@@ -609,7 +609,7 @@ const sveprf: OperandType<null> = {
     }
     const at = s.pos
     if (!s.isPunct('#') && !s.startsValue()) s.fail(L('这里应该是预取操作，例如 pldl1keep', 'Expected a prefetch operation, e.g. pldl1keep'))
-    s.eat('#')
+    s.numberHash()
     const v = Number(s.expr())
     if (v < 0 || v > 15) s.fail(L('预取操作编号应在 0 到 15 之间', 'The prefetch operation must be 0 to 15'), true, at)
     unify(s, f, 'prfop', v)
@@ -649,7 +649,8 @@ const fimm1: OperandType<{ field: string; values: [string, string] }> = {
   parse(s: OperandStream, f: Fields, a) {
     const at = s.pos
     const v = readFloat(s)
-    const i = a.values.findIndex((x) => Number(x) === v)
+    // Object.is: -0.0 is not 0.0 here.
+    const i = a.values.findIndex((x) => Object.is(Number(x), v))
     if (i < 0) s.fail(L(`这里只能是 #${a.values[0]} 或 #${a.values[1]}`, `Only #${a.values[0]} or #${a.values[1]} is allowed here`), v !== null, at)
     unify(s, f, a.field, i)
   },

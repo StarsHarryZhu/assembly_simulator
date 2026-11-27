@@ -31,7 +31,8 @@ breakpoints, console, input), and the rest are small helpers for numbers, memory
   Text that keeps every instruction on its line (comments in another language, formatted code) keeps the
   assembled program and a paused run (`replaceComments`, `reformat`).
 - `memory.ts` — sparse little-endian memory in 4 KB pages: `PagedMemory` for 32-bit address spaces,
-  `WideMemory` (with 64-bit access) for 64-bit ones.
+  `WideMemory` (with 64-bit access through a `DataView` per page) for 64-bit ones. Page offsets avoid `%`,
+  which V8 runs as a slow fmod call on addresses past 2^31.
 - `format.ts` — hex, binary groups, signed/unsigned, characters, half/float/double/bfloat16 bits,
   Java-style printing, and the same for 64-bit and wider values and addresses.
 - `i18n.ts` — the two locales, `Text` pairs, `L()`, `tx()`, `cat()`.
@@ -48,4 +49,9 @@ Phase 3: plugin machine settings (`IsaPlugin.settings`, `MachineOptions`; the se
 restarts the program when one changes), used for AArch64's SVE vector length; `RegisterSpec.partOf` links a
 register to the wider one it is part of (v<n> in z<n>), so lists such as the calculator's demo show one name.
 Phase 4: matrix registers (SME's ZA, square, with interleaved tiles) and `Machine.lastRowWrites`, the rows
-a step wrote, for the register panel's grid. Not done: nothing planned.
+a step wrote, for the register panel's grid. Phase 5: `samples.search`, the mnemonic and directive the
+instruction set tab's search box suggests; `VirtualFileSystem.remove` (optional), which undo uses to take
+back a step that created a file; a fault inside a machine (which takes the step back) stops the session
+with a console note instead of leaving it stuck in run mode. Phase 5 speed work: `WideMemory` reads and
+writes doublewords through per-page `DataView`s and finds page offsets without `%`; `addrOf` reads a
+virtual address through a scratch cell, without BigInt arithmetic or `Number()`. Not done: nothing planned.

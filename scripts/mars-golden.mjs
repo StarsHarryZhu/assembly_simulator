@@ -9,6 +9,8 @@
  *   node scripts/mars-golden.mjs loops traps  # only these (file names without .asm)
  *
  * The IDE's example programs (src/isa/mips/examples) are included as "example-<name>".
+ * GOLDEN_DIR=<dir> reads <dir>/programs and writes <dir>/expected instead, without the examples (for
+ * deeper checks such as random programs; replay with GOLDEN_DIR=<dir> npx vitest run tests/golden.test.ts).
  *
  * Per program it records:
  *   assemble.ok / errors      — MARS assembler errors ("line L column C: message")
@@ -26,12 +28,13 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const PROGRAMS = join(ROOT, 'tests', 'golden', 'programs')
-const EXPECTED = join(ROOT, 'tests', 'golden', 'expected')
+const GOLDEN = process.env.GOLDEN_DIR ? resolve(process.env.GOLDEN_DIR) : join(ROOT, 'tests', 'golden')
+const PROGRAMS = join(GOLDEN, 'programs')
+const EXPECTED = join(GOLDEN, 'expected')
 // The IDE's example programs are checked too, as "example-<id>"; their stdin lives next to the other programs.
 const EXAMPLES = join(ROOT, 'src', 'isa', 'mips', 'examples')
 
@@ -175,7 +178,7 @@ mkdirSync(EXPECTED, { recursive: true })
 const only = process.argv.slice(2)
 const names = [
   ...readdirSync(PROGRAMS).filter((f) => f.endsWith('.asm')).map((f) => basename(f, '.asm')),
-  ...readdirSync(EXAMPLES).filter((f) => f.endsWith('.asm')).map((f) => `example-${basename(f, '.asm')}`),
+  ...(process.env.GOLDEN_DIR ? [] : readdirSync(EXAMPLES).filter((f) => f.endsWith('.asm')).map((f) => `example-${basename(f, '.asm')}`)),
 ]
   .filter((n) => only.length === 0 || only.includes(n))
   .sort()

@@ -22,7 +22,7 @@ templates and the table that turns lines into words and words into text, in both
 - `simd.ts` — SIMD&FP operand types: scalar and vector registers, elements, lists, lanes, FP and modified immediates.
 - `sve.ts` — SVE operand types: Z and P registers with element sizes, lists and pairs, predicate-as-counter, indexed elements, patterns, shift and logical immediates.
 - `sme.ts` — SME operand types: ZA tiles, horizontal and vertical slices, array vectors with vector groups, ZERO's tile masks, ZT0, strided lists and narrowing shift amounts.
-- `table.ts` — the instruction and alias table: define, encode a line, decode a word, pick the alias to show.
+- `table.ts` — the instruction and alias table: define (with an optional `prepare` hook that computes field-only values once per decoded word), encode a line, decode a word, pick the alias to show.
 
 ## 4. Progress
 
@@ -31,3 +31,4 @@ and range forms). Phase 2: vector arrangements, elements and lanes, register lis
 loads' post-index forms, floating-point and modified immediates (`simd.ts`). Phase 3: the SVE operand
 types (`sve.ts`) and SVE's condition names (`b.first`, `b.none`…). Phase 4: the ZA operand types
 (`sme.ts`) and per-encoding `needs` (a number or a function of the fields) for PSTATE.SM and PSTATE.ZA.
+Phase 5: `InstrSpec.prepare`, whose result the machine caches with each decoded slot and passes to `exec`.

@@ -8,6 +8,7 @@
 import { T, type Text } from '../../../core/i18n'
 import { limmValue } from '../encoding/sve'
 import type { AliasSpec, InstrSpec } from '../encoding/table'
+import * as sf from '../softfloat'
 import type { Cpu, Fields } from './types'
 import { clz, cls, ESIZE, maskEs, popcount, sat, sx, ux } from './vec'
 import { allTrue, count, pget, predicated, zget, zset } from './zvec'
@@ -171,6 +172,8 @@ interface UnOp {
   sizes: string
   desc: Text
   fn: (a: bigint, es: number) => bigint
+  /** For FABS and FNEG: the softfloat form, which leaves NaNs alone when FPCR.AH is 1. */
+  fp?: (env: sf.FpEnv, fmt: sf.Fmt, a: bigint) => bigint
 }
 
 const ext = (bits: number, signed: boolean) => (a: bigint, es: number) => ux(signed ? BigInt.asIntN(bits, a) : BigInt.asUintN(bits, a), es)
@@ -189,8 +192,8 @@ const UN: UnOp[] = [
   { opc: 0b11001, m: 'clz', sizes: 'bhsd', desc: T('从最高位起连续 0 的个数', 'Count leading zero bits'), fn: (a, es) => BigInt(clz(a, es)) },
   { opc: 0b11010, m: 'cnt', sizes: 'bhsd', desc: T('每个元素里 1 的个数', 'Count the one bits of each element'), fn: (a) => BigInt(popcount(a)) },
   { opc: 0b11011, m: 'cnot', sizes: 'bhsd', desc: T('逻辑非：元素为 0 得 1，否则得 0', 'Logical NOT: 1 where the element is 0, else 0'), fn: (a) => (a === 0n ? 1n : 0n) },
-  { opc: 0b11100, m: 'fabs', sizes: 'hsd', desc: T('浮点绝对值：清除符号位', 'Floating-point absolute value: clear the sign bit'), fn: (a, es) => a & ~sign(es) },
-  { opc: 0b11101, m: 'fneg', sizes: 'hsd', desc: T('浮点取负：翻转符号位', 'Floating-point negate: flip the sign bit'), fn: (a, es) => a ^ sign(es) },
+  { opc: 0b11100, m: 'fabs', sizes: 'hsd', desc: T('浮点绝对值：清除符号位', 'Floating-point absolute value: clear the sign bit'), fn: (a, es) => a & ~sign(es), fp: sf.fpAbs },
+  { opc: 0b11101, m: 'fneg', sizes: 'hsd', desc: T('浮点取负：翻转符号位', 'Floating-point negate: flip the sign bit'), fn: (a, es) => a ^ sign(es), fp: sf.fpNeg },
   { opc: 0b11110, m: 'not', sizes: 'bhsd', desc: T('按位取反', 'Bitwise NOT'), fn: (a, es) => ~a & maskEs(es) },
 ]
 
@@ -207,7 +210,11 @@ for (const op of UN) {
     exec(c, f) {
       const es = f.size!
       const z = zget(c, f.Zn!, es)
-      predicated(c, f.Zd!, es, pget(c, f.Pg!, es), true, (i) => op.fn(z[i]!, es))
+      if (op.fp) {
+        const env = c.fpEnv()
+        const fmt = sf.fmtOfBytes(ESIZE[es]! / 8)
+        predicated(c, f.Zd!, es, pget(c, f.Pg!, es), true, (i) => op.fp!(env, fmt, z[i]!))
+      } else predicated(c, f.Zd!, es, pget(c, f.Pg!, es), true, (i) => op.fn(z[i]!, es))
     },
   })
 }

@@ -22,6 +22,7 @@
  * which no pattern has, for the operands after it.
  */
 import { L } from '../../../core/i18n'
+import type { Tok } from '../lexer'
 import { parseVreg } from '../registers'
 import { printWidths } from './operands'
 import { fmtImm, unify, type Fields, type OperandStream, type OperandType, type OpSpec } from './syntax'
@@ -257,10 +258,10 @@ function elementToken(s: OperandStream, label: string | null): { n: number; es: 
   const es = LETTERS.indexOf(r.arr.slice(-1))
   s.pos++
   if (!s.eat('[')) s.fail(L('元素要写下标，例如 v1.s[0]', 'An element needs an index, e.g. v1.s[0]'))
-  const t = s.peek()
-  if (!t || t.kind !== 'num') s.fail(L('下标应该是数字', 'The index must be a number'))
-  const index = Number(t.value)
-  s.pos++
+  if (!s.startsValue()) s.fail(L('下标应该是数字', 'The index must be a number'))
+  const at = s.pos
+  const index = Number(s.expr())
+  if (index < 0) s.fail(L('下标不能是负数', 'The index cannot be negative'), true, at)
   if (!s.eat(']')) s.fail(L('缺少 "]"', 'Missing "]"'))
   return { n: r.n, es, index }
 }
@@ -431,13 +432,12 @@ const LANE_BITS: Record<number, string[]> = { 0: ['Q', 'S', 'size'], 1: ['Q', 'S
 const laneIndex: OperandType<{ es: number }> = {
   kind: 'imm',
   parse(s: OperandStream, f: Fields, a) {
-    const t = s.peek()
-    if (!t || t.kind !== 'num') s.fail(L('下标应该是数字', 'The index must be a number'))
+    if (!s.startsValue()) s.fail(L('下标应该是数字', 'The index must be a number'))
+    const at = s.pos
     const max = (16 >> a.es) - 1
-    const v = Number(t.value)
-    if (v > max) s.fail(L(`下标超出范围：应在 0 到 ${max} 之间`, `Index out of range: expected 0 to ${max}`), true)
+    const v = Number(s.expr())
+    if (v < 0 || v > max) s.fail(L(`下标超出范围：应在 0 到 ${max} 之间`, `Index out of range: expected 0 to ${max}`), true, at)
     putBits(s, f, LANE_BITS[a.es]!, v, () => '')
-    s.pos++
   },
   print: (f, a) => String(getBits(f, LANE_BITS[a.es]!, printWidths.current)),
   fields: (a) => LANE_BITS[a.es]!,
@@ -487,18 +487,21 @@ const FP_IMM = Array.from({ length: 256 }, (_, i) => fpImm8(i))
 /** A float as written: 1.0, 0.5, -2.0 (always with a decimal point). */
 export const fpText = (v: number) => (Number.isInteger(v) ? v.toFixed(1) : String(v))
 
-export function readFloat(s: OperandStream): number | null {
+export function readFloat(s: OperandStream, plus = false): number | null {
   let sign = 1
   let k = 0
   if (s.isPunct('-')) {
     sign = -1
     k = 1
-  } else if (s.isPunct('+')) k = 1
+  } else if (plus && s.isPunct('+')) k = 1
   const t = s.peek(k)
   if (!t || (t.kind !== 'float' && t.kind !== 'num')) return null
   s.pos += k + 1
   return sign * (t.kind === 'float' ? t.fnum! : Number(t.value))
 }
+
+/** A lower-case `0x` integer, which the 8-bit FP immediates read as their encoding (`#0x70` is 1.0), as LLVM does. */
+const isFpCode = (t: Tok | undefined) => t?.kind === 'num' && t.text.startsWith('0x')
 
 interface FimmArg {
   fields: string[]
@@ -507,10 +510,18 @@ const fimm: OperandType<FimmArg> = {
   kind: 'imm',
   parse(s: OperandStream, f: Fields, a) {
     const at = s.pos
-    const v = readFloat(s)
-    if (v === null) s.fail(L('这里应该是浮点立即数，例如 #1.5', 'Expected a floating-point immediate, e.g. #1.5'))
-    const imm8 = FP_IMM.indexOf(v)
-    if (imm8 < 0) s.fail(L(`${v} 不能写成 8 位浮点立即数（只能是 ±(1 + n/16) × 2^e，n 为 0–15，e 为 −3–4；0 要用 fmov 寄存器的写法）`, `${v} cannot be an 8-bit FP immediate (only ±(1 + n/16) × 2^e with n 0–15 and e −3–4; for 0 move a zero register)`), true, at)
+    let imm8: number
+    const t = s.peek()
+    if (isFpCode(t)) {
+      if (t!.value! > 255n) s.fail(L('编码形式的浮点立即数只能是 0x0 到 0xff', 'An encoded floating-point immediate must be 0x0 to 0xff'), true)
+      imm8 = Number(t!.value)
+      s.pos++
+    } else {
+      const v = readFloat(s)
+      if (v === null) s.fail(L('这里应该是浮点立即数，例如 #1.5', 'Expected a floating-point immediate, e.g. #1.5'))
+      imm8 = FP_IMM.indexOf(v)
+      if (imm8 < 0) s.fail(L(`${v} 不能写成 8 位浮点立即数（只能是 ±(1 + n/16) × 2^e，n 为 0–15，e 为 −3–4；0 要用 fmov 寄存器的写法）`, `${v} cannot be an 8-bit FP immediate (only ±(1 + n/16) × 2^e with n 0–15 and e −3–4; for 0 move a zero register)`), true, at)
+    }
     if (a.fields.length === 1) unify(s, f, a.fields[0]!, imm8)
     else {
       unify(s, f, a.fields[0]!, imm8 >> 5)
@@ -534,8 +545,14 @@ const fzero: OperandType<null> = {
   kind: 'imm',
   parse(s: OperandStream) {
     const at = s.pos
-    const v = readFloat(s)
-    if (v !== 0) s.fail(L('这里只能是 #0.0', 'Only #0.0 is allowed here'), v !== null, at)
+    // What a zero may look like depends on the instruction, as in LLVM: the Neon compares with zero (two
+    // operands before it, no predicate) also take `#0`, `#0x0` and `#+0.0`; FCMP and the SVE compares want
+    // a real 0.0; FMOV takes `#0`, and leaves `#0x…` to its encoded-immediate form.
+    const neon = !('Pg' in s.widths) && !('ftype' in s.widths) && s.toks.slice(0, s.pos).filter((t) => t.kind === 'punct' && t.text === ',').length === 2
+    const t = s.peek(s.isPunct('-') || s.isPunct('+') ? 1 : 0)
+    if (!neon && t?.kind === 'num' && (isFpCode(t) || 'ftype' in s.widths || 'Pd' in s.widths)) s.fail(L('这里只能是 #0.0', 'Only #0.0 is allowed here'))
+    const v = readFloat(s, neon)
+    if (v !== 0 || Object.is(v, -0)) s.fail(L('这里只能是 #0.0', 'Only #0.0 is allowed here'), v !== null, at)
   },
   print: () => '0.0',
   fields: () => [],
@@ -739,9 +756,11 @@ const vd1: OperandType<{ field: string }> = {
   kind: 'reg',
   parse(s: OperandStream, f: Fields, a) {
     const r = vtok(s)
-    if (!r || r.kind !== 'v' || r.arr !== 'd' || !s.isPunct('[', 1) || s.peek(2)?.text !== '1' || !s.isPunct(']', 3)) s.fail(L('这里应该是 v0.d[1] 这样的高 64 位', 'Expected the upper doubleword, as in v0.d[1]'))
-    unify(s, f, a.field, r.n)
-    s.pos += 4
+    const bad = () => s.fail(L('这里应该是 v0.d[1] 这样的高 64 位', 'Expected the upper doubleword, as in v0.d[1]'))
+    if (!r || r.kind !== 'v' || r.arr !== 'd' || !s.isPunct('[', 1)) bad()
+    s.pos += 2
+    if (!s.startsValue() || s.expr() !== 1n || !s.eat(']')) bad()
+    unify(s, f, a.field, r!.n)
   },
   print: (f, a) => `v${f[a.field]}.d[1]`,
   fields: (a) => [a.field],

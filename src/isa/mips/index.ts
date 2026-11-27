@@ -133,6 +133,7 @@ export const mips: IsaPlugin = {
       { word: '0x00000000', note: 'nop' },
     ],
     push: 'addi $sp, $sp, -4',
+    search: ['sll', '.word'],
   },
   zeroRegister: 0,
   assemble: (source: SourceFile, options) => assemble(source, options),

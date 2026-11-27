@@ -213,7 +213,8 @@ for (const [m, E] of [
     id: `${m}-zero`,
     mnemonic: m,
     group: 'fp',
-    bits: `0 0 0 11110 ftype:2 1 00000 001000 Rn:5 ${E}1000`,
+    // Rm is (0): ignored when decoding, as LLVM and the CPU we check against do; assembled as 0.
+    bits: `0 0 0 11110 ftype:2 1 Rm:5 001000 Rn:5 ${E}1000`,
     syntax: '<En:ftype>, #<fzero>',
     valid: okFt,
     desc: desc(true),

@@ -6,7 +6,7 @@ import { L, T } from '../../../core/i18n'
 import { decodeBitmask } from '../encoding/bitmask'
 import type { AliasSpec, InstrSpec } from '../encoding/table'
 import type { Fields } from './types'
-import { addWithCarry, bitsOf, decodeBitMasks, logicFlags, maskOf, rotateRight, sext, signed } from './util'
+import { addWithCarry, bitsOf, decodeBitMasks, logicFlags, maskOf, nzcvOut, rotateRight, sext, signed, subWithBorrow } from './util'
 
 const adrOffset = (f: Fields) => BigInt(sext((f.immhi! << 2) | f.immlo!, 21))
 
@@ -40,7 +40,7 @@ export const INSTRS: InstrSpec[] = [
     bits: 'sf 0 0 100010 sh imm12:12 Rn:5 Rd:5',
     syntax: '<Rd|SP>, <Rn|SP>, #<aimm>{, lsl #<sh12>}',
     desc: T('加立即数：Rd = Rn + imm（imm 是 0–4095，可再左移 12 位）', 'Add immediate: Rd = Rn + imm (imm is 0–4095, optionally shifted left by 12)'),
-    exec: (c, f) => c.setRsp(f.sf!, f.Rd!, addWithCarry(f.sf!, c.rsp(f.sf!, f.Rn!), arithImm(f), 0)[0]),
+    exec: (c, f) => c.setRsp(f.sf!, f.Rd!, addWithCarry(f.sf!, c.rsp(f.sf!, f.Rn!), arithImm(f), 0)),
   },
   {
     id: 'adds-imm',
@@ -50,9 +50,9 @@ export const INSTRS: InstrSpec[] = [
     syntax: '<Rd>, <Rn|SP>, #<aimm>{, lsl #<sh12>}',
     desc: T('加立即数并设置标志 NZCV', 'Add immediate and set the NZCV flags'),
     exec: (c, f) => {
-      const [r, nzcv] = addWithCarry(f.sf!, c.rsp(f.sf!, f.Rn!), arithImm(f), 0)
+      const r = addWithCarry(f.sf!, c.rsp(f.sf!, f.Rn!), arithImm(f), 0)
       c.setR(f.sf!, f.Rd!, r)
-      c.setFlags(nzcv)
+      c.setFlags(nzcvOut)
     },
   },
   {
@@ -62,7 +62,7 @@ export const INSTRS: InstrSpec[] = [
     bits: 'sf 1 0 100010 sh imm12:12 Rn:5 Rd:5',
     syntax: '<Rd|SP>, <Rn|SP>, #<aimm>{, lsl #<sh12>}',
     desc: T('减立即数：Rd = Rn − imm', 'Subtract immediate: Rd = Rn − imm'),
-    exec: (c, f) => c.setRsp(f.sf!, f.Rd!, addWithCarry(f.sf!, c.rsp(f.sf!, f.Rn!), ~arithImm(f) & maskOf(f.sf!), 1)[0]),
+    exec: (c, f) => c.setRsp(f.sf!, f.Rd!, subWithBorrow(f.sf!, c.rsp(f.sf!, f.Rn!), arithImm(f), 1)),
   },
   {
     id: 'subs-imm',
@@ -72,9 +72,9 @@ export const INSTRS: InstrSpec[] = [
     syntax: '<Rd>, <Rn|SP>, #<aimm>{, lsl #<sh12>}',
     desc: T('减立即数并设置标志 NZCV', 'Subtract immediate and set the NZCV flags'),
     exec: (c, f) => {
-      const [r, nzcv] = addWithCarry(f.sf!, c.rsp(f.sf!, f.Rn!), ~arithImm(f) & maskOf(f.sf!), 1)
+      const r = subWithBorrow(f.sf!, c.rsp(f.sf!, f.Rn!), arithImm(f), 1)
       c.setR(f.sf!, f.Rd!, r)
-      c.setFlags(nzcv)
+      c.setFlags(nzcvOut)
     },
   },
   ...(
@@ -119,9 +119,9 @@ export const INSTRS: InstrSpec[] = [
       syntax: m === 'ands' ? '<Rd>, <Rn>, #<bimm>' : '<Rd|SP>, <Rn>, #<bimm>',
       valid: (f) => decodeBitmask(f.N!, f.immr!, f.imms!, f.sf ? 64 : 32) !== null,
       desc,
-      exec: (c, f) => {
+      prepare: logicImm,
+      exec: (c, f, b: bigint) => {
         const a = c.r(f.sf!, f.Rn!)
-        const b = logicImm(f)
         const r = opc === 1 ? a | b : opc === 2 ? a ^ b : a & b
         if (opc === 3) {
           c.setR(f.sf!, f.Rd!, r)
@@ -145,12 +145,12 @@ export const INSTRS: InstrSpec[] = [
       syntax: '<Rd>, #<mov16>{, lsl #<hw>}',
       valid: (f) => f.sf === 1 || f.hw! < 2,
       desc,
-      exec: (c, f) => {
-        const pos = BigInt(16 * f.hw!)
-        const v = BigInt(f.imm16!) << pos
-        if (opc === 0) c.setR(f.sf!, f.Rd!, ~v & maskOf(f.sf!))
+      // [imm16 << shift, the bits MOVK keeps]
+      prepare: (f) => [BigInt(f.imm16!) << BigInt(16 * f.hw!), maskOf(f.sf!) ^ (0xffffn << BigInt(16 * f.hw!))],
+      exec: (c, f, [v, keep]: [bigint, bigint]) => {
+        if (opc === 0) c.setR(f.sf!, f.Rd!, v ^ maskOf(f.sf!))
         else if (opc === 2) c.setR(f.sf!, f.Rd!, v)
-        else c.setR(f.sf!, f.Rd!, (c.r(f.sf!, f.Rd!) & ~(0xffffn << pos)) | v)
+        else c.setR(f.sf!, f.Rd!, (c.r(f.sf!, f.Rd!) & keep) | v)
       },
     }),
   ),
@@ -170,23 +170,28 @@ export const INSTRS: InstrSpec[] = [
       valid: (f) => f.N === f.sf && (f.sf === 1 || (f.immr! < 32 && f.imms! < 32)),
       encode: (f) => void (f.N = f.sf!),
       desc,
-      exec: (c, f) => {
+      prepare: (f) => {
         const bits = bitsOf(f.sf!)
-        const [wmask, tmask] = decodeBitMasks(f.N!, f.imms!, f.immr!, false, bits)!
-        const src = c.r(f.sf!, f.Rn!)
-        const rot = rotateRight(src, f.immr!, bits)
         const m = maskOf(f.sf!)
+        const [wmask, tmask] = decodeBitMasks(f.N!, f.imms!, f.immr!, false, bits)!
+        // ROR by immr is (src >> r) | (src << (bits − r)) within the width.
+        const r = f.immr! % bits
+        return { wmask, tmask, nwmask: m ^ wmask, ntmask: m ^ tmask, m, right: BigInt(r), left: BigInt((bits - r) % bits), sign: BigInt(f.imms!) }
+      },
+      exec: (c, f, p: { wmask: bigint; tmask: bigint; nwmask: bigint; ntmask: bigint; m: bigint; right: bigint; left: bigint; sign: bigint }) => {
+        const src = c.r(f.sf!, f.Rn!)
+        const rot = ((src >> p.right) | (src << p.left)) & p.m
         let r: bigint
         if (opc === 1) {
           const dst = c.r(f.sf!, f.Rd!)
-          const bot = (dst & ~wmask & m) | (rot & wmask)
-          r = (dst & ~tmask & m) | (bot & tmask)
+          const bot = (dst & p.nwmask) | (rot & p.wmask)
+          r = (dst & p.ntmask) | (bot & p.tmask)
         } else {
-          const bot = rot & wmask
-          if (opc === 2) r = bot & tmask
+          const bot = rot & p.wmask
+          if (opc === 2) r = bot & p.tmask
           else {
-            const top = (src >> BigInt(f.imms!)) & 1n ? m : 0n
-            r = (top & ~tmask & m) | (bot & tmask)
+            const top = (src >> p.sign) & 1n ? p.m : 0n
+            r = (top & p.ntmask) | (bot & p.tmask)
           }
         }
         c.setR(f.sf!, f.Rd!, r)

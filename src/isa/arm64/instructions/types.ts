@@ -84,6 +84,10 @@ export interface Cpu {
   vread(n: number, bytes: number): Uint8Array
   /** Write the low bytes of SIMD&FP register n; the rest of the register becomes zero. */
   vwrite(n: number, data: Uint8Array): void
+  /** The low `bytes` bytes of register n as elements of size es (0–4 for 8 to 128 bits), unsigned. */
+  vlanes(n: number, bytes: number, es: number): bigint[]
+  /** Write elements of size es to the low bytes of register n (each truncated); the rest becomes zero. */
+  vsetLanes(n: number, vals: bigint[], es: number): void
   /** The low `bytes` bytes of SIMD&FP register n as an unsigned number. */
   vget(n: number, bytes: number): bigint
   /**
@@ -102,6 +106,10 @@ export interface Cpu {
   zaRead(r: number): Uint8Array
   /** Write row r of the ZA array. */
   zaWrite(r: number, data: Uint8Array): void
+  /** Row r of the ZA array as elements of size es, unsigned. */
+  zaLanes(r: number, es: number): bigint[]
+  /** Write row r of the ZA array from elements of size es (each truncated). */
+  zaSetLanes(r: number, vals: bigint[], es: number): void
   /** ZT0's 64 bytes (a copy). */
   zt0Read(): Uint8Array
   zt0Write(data: Uint8Array): void
@@ -109,6 +117,17 @@ export interface Cpu {
   pread(n: number): Uint8Array
   /** Write predicate n (16 for FFR) from one 0/1 byte per vector byte. */
   pwrite(n: number, bits: Uint8Array): void
+  /** Predicate n as one flag per element of size es: the bit of each element's first byte. */
+  pflags(n: number, es: number): boolean[]
+  /** Write predicate n (16 for FFR): element i's first bit from flags[i], every other bit zero. */
+  psetFlags(n: number, flags: boolean[], es: number): void
+  /**
+   * The `size` bytes at addr when all of them can be read without a fault, else null and nothing happens:
+   * the caller then makes its element accesses one at a time, so a fault names the right element.
+   */
+  loadBlock(addr: bigint, size: number): Uint8Array | null
+  /** Store data at addr when all of it can be written without a fault; says whether it did (else nothing happens). */
+  storeBlock(addr: bigint, data: Uint8Array): boolean
   /** A floating-point environment holding FPCR, for one instruction's soft-float calls. */
   fpEnv(): FpEnv
   /** FPCR without marking it read (for instructions that only look at a control bit). */

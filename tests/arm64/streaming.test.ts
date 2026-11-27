@@ -13,7 +13,7 @@ import { loadTables } from '../../src/isa/arm64/instructions/index'
 import { decodeWord, disassemble, NEED, needsOf } from '../../src/isa/arm64/encoding/table'
 
 loadTables()
-const { cases } = JSON.parse(readFileSync(join(__dirname, 'golden', 'native', 'streaming.json'), 'utf8')) as { cases: [string, string, (string | null)[]][] }
+const { cases } = JSON.parse(readFileSync(join(process.env.NATIVE_DIR ?? join(__dirname, 'golden', 'native'), 'streaming.json'), 'utf8')) as { cases: [string, string, (string | null)[]][] }
 const ABSENT = new Set(['movt-x', 'movt-zt0'])
 const SVE_GROUPS = new Set(['sve', 'sve2', 'sveperm', 'svepred', 'svefp', 'sveload'])
 

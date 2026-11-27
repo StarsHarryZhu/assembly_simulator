@@ -16,12 +16,14 @@ import {
   logicFlags,
   M64,
   maskOf,
+  nzcvOut,
   popcount,
   reverseBits,
   reverseBytes,
   rotateRight,
   shiftValue,
   signed,
+  subWithBorrow,
 } from './util'
 
 const bin = (v: number, n: number) => v.toString(2).padStart(n, '0')
@@ -122,10 +124,10 @@ const SHIFTED_ARITH: [string, number, number, Text][] = [
 function arith(c: Cpu, f: Fields, sub: number, setFlags: number, b: bigint, spForm: boolean) {
   const sf = f.sf!
   const a = spForm ? c.rsp(sf, f.Rn!) : c.r(sf, f.Rn!)
-  const [r, nzcv] = sub ? addWithCarry(sf, a, ~b & maskOf(sf), 1) : addWithCarry(sf, a, b, 0)
+  const r = sub ? subWithBorrow(sf, a, b, 1) : addWithCarry(sf, a, b, 0)
   if (setFlags) {
     c.setR(sf, f.Rd!, r)
-    c.setFlags(nzcv)
+    c.setFlags(nzcvOut)
   } else if (spForm) c.setRsp(sf, f.Rd!, r)
   else c.setR(sf, f.Rd!, r)
 }
@@ -240,7 +242,7 @@ export const INSTRS: InstrSpec[] = [
         const sf = f.sf!
         const a = c.r(sf, f.Rn!)
         let b = shiftValue(sf, c.r(sf, f.Rm!), f.shift!, f.imm6!)
-        if (N) b = ~b & maskOf(sf)
+        if (N) b ^= maskOf(sf)
         const r = opc === 1 ? a | b : opc === 2 ? a ^ b : a & b
         c.setR(sf, f.Rd!, r)
         if (opc === 3) c.setFlags(logicFlags(sf, r))
@@ -288,10 +290,10 @@ export const INSTRS: InstrSpec[] = [
       desc,
       exec: (c, f) => {
         const sf = f.sf!
-        const b = op ? ~c.r(sf, f.Rm!) & maskOf(sf) : c.r(sf, f.Rm!)
-        const [r, nzcv] = addWithCarry(sf, c.r(sf, f.Rn!), b, (c.flags() >> 1) & 1)
+        const carry = (c.flags() >> 1) & 1
+        const r = op ? subWithBorrow(sf, c.r(sf, f.Rn!), c.r(sf, f.Rm!), carry) : addWithCarry(sf, c.r(sf, f.Rn!), c.r(sf, f.Rm!), carry)
         c.setR(sf, f.Rd!, r)
-        if (S) c.setFlags(nzcv)
+        if (S) c.setFlags(nzcvOut)
       },
     }),
   ),
@@ -388,8 +390,9 @@ function ccmp(c: Cpu, f: Fields, op: number, b: bigint) {
   const sf = f.sf!
   if (c.cond(f.cond!)) {
     const a = c.r(sf, f.Rn!)
-    const [, nzcv] = op ? addWithCarry(sf, a, ~b & maskOf(sf), 1) : addWithCarry(sf, a, b, 0)
-    c.setFlags(nzcv)
+    if (op) subWithBorrow(sf, a, b, 1)
+    else addWithCarry(sf, a, b, 0)
+    c.setFlags(nzcvOut)
   } else c.setFlags(f.nzcv!)
 }
 

@@ -60,7 +60,7 @@ function sci(m: bigint, e: number, p: number): [bigint, number] {
 }
 const expText = (E: number, upper: boolean) => `${upper ? 'E' : 'e'}${E < 0 ? '-' : '+'}${String(Math.abs(E)).padStart(2, '0')}`
 
-function hexFloat(d: Decoded, fmt: sf.Fmt, precision: number, upper: boolean): string {
+function hexFloat(d: Decoded, fmt: sf.Fmt, precision: number, upper: boolean, alt: boolean): string {
   const nibbles = Math.ceil(fmt.f / 4)
   const bias = (1 << (fmt.e - 1)) - 1
   let lead = d.m >> BigInt(fmt.f)
@@ -72,7 +72,9 @@ function hexFloat(d: Decoded, fmt: sf.Fmt, precision: number, upper: boolean): s
     const q = frac >> drop
     const r2 = (frac & ((1n << drop) - 1n)) * 2n
     const one = 1n << drop
-    frac = r2 > one || (r2 === one && (q & 1n) === 1n) ? q + 1n : q
+    // A tie goes to even on the last digit kept: the leading digit when no fraction digit is.
+    const odd = ((precision ? q : lead) & 1n) === 1n
+    frac = r2 > one || (r2 === one && odd) ? q + 1n : q
     digits = precision
     if (frac >> BigInt(digits * 4)) {
       frac &= (1n << BigInt(digits * 4)) - 1n
@@ -83,7 +85,8 @@ function hexFloat(d: Decoded, fmt: sf.Fmt, precision: number, upper: boolean): s
   if (precision < 0) f = f.replace(/0+$/, '')
   else f = f.padEnd(precision, '0')
   if (d.m === 0n) exp = 0
-  const s = `0x${lead.toString(16)}${f ? `.${f}` : ''}p${exp < 0 ? '-' : '+'}${Math.abs(exp)}`
+  // '#' keeps the point even with no digits after it.
+  const s = `0x${lead.toString(16)}${f || alt ? `.${f}` : ''}p${exp < 0 ? '-' : '+'}${Math.abs(exp)}`
   return upper ? s.toUpperCase() : s
 }
 
@@ -101,7 +104,7 @@ export function formatFloat(bits: bigint, fmt: sf.Fmt, conv: string, flags: stri
   }
   const alt = flags.includes('#')
   const c = conv.toLowerCase()
-  if (c === 'a') return { sign, body: hexFloat(d, fmt, precision, upper), special: false }
+  if (c === 'a') return { sign, body: hexFloat(d, fmt, precision, upper, alt), special: false }
   if (c === 'f') {
     const p = precision < 0 ? 6 : precision
     return { sign, body: point(scaled(d.m, d.e, p), p, alt), special: false }
@@ -146,7 +149,14 @@ export function parseFloatBits(text: string, fmt: sf.Fmt): bigint | null {
   const signBit = neg ? 1n << BigInt(fmt.n - 1) : 0n
   const expAll = BigInt((1 << fmt.e) - 1) << BigInt(fmt.f)
   if (s.startsWith('inf')) return signBit | expAll
-  if (s.startsWith('nan')) return signBit | expAll | (1n << BigInt(fmt.f - 1))
+  if (s.startsWith('nan')) {
+    // nan(n-char-sequence): a sequence that reads as an integer (decimal, 0x hex or 0 octal, as strtoull
+    // reads it, too large ones clamping) becomes the payload below the quiet bit.
+    const seq = /^nan\(([0-9a-z_]*)\)/.exec(s)?.[1] ?? ''
+    const digits = /^0x[0-9a-f]+$|^0[0-7]*$|^[1-9][0-9]*$/.test(seq) ? (seq.startsWith('0x') ? seq : seq.length > 1 && seq.startsWith('0') ? `0o${seq.slice(1)}` : seq) : ''
+    const payload = digits ? (BigInt(digits) > 0xffff_ffff_ffff_ffffn ? 0xffff_ffff_ffff_ffffn : BigInt(digits)) & ((1n << BigInt(fmt.f - 1)) - 1n) : 0n
+    return signBit | expAll | (1n << BigInt(fmt.f - 1)) | payload
+  }
   let num: bigint
   let den = 1n
   if (s.startsWith('0x')) {

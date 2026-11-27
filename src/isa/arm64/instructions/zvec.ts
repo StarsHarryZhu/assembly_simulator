@@ -4,35 +4,19 @@
  * most SVE instructions share. Element sizes are numbered 0–4 for 8, 16, 32, 64 and 128 bits.
  */
 import type { Cpu } from './types'
-import { elems, ESIZE, toBytes } from './vec'
+import { ESIZE } from './vec'
 
 /** Elements of Z register n. */
-export const zget = (c: Cpu, n: number, es: number): bigint[] => elems(c.vread(n, c.vl), es)
+export const zget = (c: Cpu, n: number, es: number): bigint[] => c.vlanes(n, c.vl, es)
 /** Write elements to Z register n (the whole register). */
-export const zset = (c: Cpu, n: number, vals: bigint[], es: number): void => c.vwrite(n, toBytes(vals, es))
+export const zset = (c: Cpu, n: number, vals: bigint[], es: number): void => c.vsetLanes(n, vals, es)
 /** Number of elements of size es in a vector. */
 export const count = (c: Cpu, es: number) => (c.vl * 8) / ESIZE[es]!
 
 /** Predicate n as one flag per element of size es (the bit of each element's first byte). */
-export function pget(c: Cpu, n: number, es: number): boolean[] {
-  const bits = c.pread(n)
-  const step = ESIZE[es]! / 8
-  const out: boolean[] = []
-  for (let i = 0; i < bits.length; i += step) out.push(bits[i] === 1)
-  return out
-}
+export const pget = (c: Cpu, n: number, es: number): boolean[] => c.pflags(n, es)
 
-/** Bits of a predicate whose elements of size es are the given flags (other bits zero). */
-export function pbits(c: Cpu, flags: boolean[], es: number): Uint8Array {
-  const bits = new Uint8Array(c.vl)
-  const step = ESIZE[es]! / 8
-  flags.forEach((b, i) => {
-    if (b) bits[i * step] = 1
-  })
-  return bits
-}
-
-export const pset = (c: Cpu, n: number, flags: boolean[], es: number): void => c.pwrite(n, pbits(c, flags, es))
+export const pset = (c: Cpu, n: number, flags: boolean[], es: number): void => c.psetFlags(n, flags, es)
 
 /** All-true governing predicate, for unpredicated forms. */
 export const allTrue = (c: Cpu, es: number): boolean[] => new Array(count(c, es)).fill(true)

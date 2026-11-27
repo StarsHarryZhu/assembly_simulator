@@ -38,7 +38,7 @@ states, and the C harness that runs them on this Mac's CPU and prints what each 
 
 Done: integer data processing, conditional select, loads and stores, atomics and exclusives (3240
 cases); scalar floating point and Neon under random FPCR modes with IEEE special values, vector loads and
-stores, AES and SHA (8107 cases; SM3 and SM4 are absent on this CPU); SVE, SVE2 and SVE2.1 in streaming
+stores, AES and SHA (8110 cases; SM3 and SM4 are absent on this CPU); SVE, SVE2 and SVE2.1 in streaming
 mode at 512 bits (5555 cases); SME, SME2 and SME2.1 with ZA (2052 cases; a deeper run with `PER=15`,
 10260 cases, also matched); the four-state probe of every FP, Neon, SVE and SME encoding (5768 words).
 Not done: nothing planned.

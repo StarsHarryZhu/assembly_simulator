@@ -16,6 +16,7 @@ import { WideMemory } from '../../core/memory'
 import { decodeWord, disassemble, NEED, needsOf, type Exec } from './encoding/table'
 import { loadTables } from './instructions/index'
 import { ACC, type Cpu, type Fields } from './instructions/types'
+import { ESIZE, lanesAt, storeLanes } from './instructions/vec'
 import { KERNEL_LIMIT, KTEXT_BASE, TEXT_BASE } from './assembler'
 import {
   HEAP_BASE,
@@ -23,6 +24,7 @@ import {
   KSTACK_TOP,
   MAIN_RETURN,
   MALLOC_BASE,
+  PAGE,
   pageUp,
   STACK_SIZE,
   STACK_TOP,
@@ -32,7 +34,6 @@ import {
   toUtf8,
   WaitForInput,
   type Host,
-  type OpenFile,
   type OsState,
 } from './linux'
 import { libcAt, type Args } from './libc'
@@ -75,6 +76,8 @@ loadTables()
 
 const TOP = 2 ** 48
 const UNDO_LIMIT = 2000
+/** Undo records in the ring: one more than the limit, so the step being made never writes over a kept one. */
+const RING = UNDO_LIMIT + 1
 const M64 = 0xffff_ffff_ffff_ffffn
 /** Initial stack pointer: room above it for argc, argv and the program name. */
 export const INITIAL_SP = STACK_TOP - 64
@@ -141,12 +144,24 @@ const FIXED_SYSREGS: Record<string, bigint> = {
 interface Slot {
   exec: Exec
   fields: Fields
+  /** What the instruction's prepare made of its fields. */
+  prep: unknown
   line: number
   /** NEED bits of the instruction. */
   needs: number
 }
 
-/** One step's undo record. Records are recycled from a ring, so their arrays are reused. */
+/** A register's value before a step: a number or bigint, or the old bytes of a vector, predicate or ZT0. */
+type OldValue = RegValue | Uint8Array
+
+/** Pseudo register id of an undo entry that holds all of NZCV (one entry instead of four). */
+const NZCV_LOG = -1
+
+/**
+ * One step's undo record. Records are recycled from a ring, so their lists are reused: each list holds the
+ * first `…N` entries and the rest are stale, to be overwritten (truncating an array is a slow runtime call in
+ * V8, and every step refills the lists).
+ */
 class StepLog {
   pc = 0
   prevSteps = 0
@@ -154,41 +169,89 @@ class StepLog {
   os: OsState = INITIAL_OS
   stdinLen = 0
   monitor: { addr: number; size: number } | null = null
+  regN = 0
   regIds: number[] = []
+  /** Old values; for a vector, predicate or ZT0 register (bytesReg), the offset of its old bytes in `bytes`. */
   regOld: RegValue[] = []
+  /** The number of old bytes of a bytesReg entry. */
+  regLen: number[] = []
+  /**
+   * Old values of X registers and SP, at the same index as their entry in regIds (a typed array takes a
+   * 64-bit value without allocating a bigint).
+   */
+  x64 = new BigUint64Array(8)
+  statusN = 0
   statusIds: number[] = []
   statusOld: number[] = []
+  memN = 0
   memAddr: number[] = []
   memSize: number[] = []
   memOld: bigint[] = []
+  readN = 0
   reads: number[] = []
-  /** ZA rows written (row number, old bytes), in order. */
+  /** ZA rows written (row number, offset of the old bytes in `bytes`, their number), in order. */
+  zaN = 0
   zaRows: number[] = []
-  zaOld: Uint8Array[] = []
+  zaOld: number[] = []
+  zaLen: number[] = []
+  /**
+   * Old bytes of vector, predicate and ZT0 registers and of ZA rows, `byteN` of them in use (copying into one
+   * buffer that the record keeps costs a fraction of allocating a copy for every write).
+   */
+  bytes = new Uint8Array(0)
+  words = new Uint32Array(0)
+  byteN = 0
   /** The vector, predicate, ZA and ZT0 storage before a change of PSTATE.SM or PSTATE.ZA cleared it. */
   vecSnap: Uint8Array | null = null
   predSnap: Uint8Array | null = null
   zaSnap: Uint8Array | null = null
   ztSnap: Uint8Array | null = null
+  /** The target of a bad branch before the step (it names the fault the next step takes). */
+  badTarget = 0n
+  /**
+   * Before a system call on a file: the store's files it changed, with their contents before (null: the file
+   * did not exist). The open-file table itself is part of `os`.
+   */
+  vfs: [string, Uint8Array | null][] | null = null
   output = ''
   sleep = 0
   reset(pc: number) {
     this.pc = pc
-    this.regIds.length = 0
-    this.regOld.length = 0
-    this.statusIds.length = 0
-    this.statusOld.length = 0
-    this.memAddr.length = 0
-    this.memSize.length = 0
-    this.memOld.length = 0
-    this.reads.length = 0
-    this.zaRows.length = 0
-    this.zaOld.length = 0
-    this.vecSnap = this.predSnap = this.zaSnap = this.ztSnap = null
+    this.regN = this.statusN = this.memN = this.readN = this.zaN = this.byteN = 0
+    if (this.vecSnap || this.zaSnap) this.vecSnap = this.predSnap = this.zaSnap = this.ztSnap = null
+    if (this.vfs) this.vfs = null
     this.output = ''
     this.sleep = 0
   }
+
+  /** Copy `len` bytes of src from `from` (a multiple of 4; srcWords views the same buffer); their offset here. */
+  keep(src: Uint8Array, srcWords: Uint32Array, from: number, len: number): number {
+    const at = this.byteN
+    const end = at + len
+    if (end > this.bytes.length) {
+      const grown = new Uint8Array(Math.max(this.bytes.length * 2, end + 3, 256) & ~3)
+      grown.set(this.bytes.subarray(0, at))
+      this.bytes = grown
+      this.words = new Uint32Array(grown.buffer)
+    }
+    const w = len >> 2
+    const d = at >> 2
+    const sw = from >> 2
+    for (let k = 0; k < w; k++) this.words[d + k] = srcWords[sw + k]!
+    for (let i = w << 2; i < len; i++) this.bytes[at + i] = src[from + i]!
+    // Offsets stay multiples of 4.
+    this.byteN = (end + 3) & ~3
+    return at
+  }
+
+  /** Bytes kept at an offset. */
+  kept(at: number, len: number): Uint8Array {
+    return this.bytes.subarray(at, at + len)
+  }
 }
+
+/** Registers whose undo entries keep old bytes in StepLog.bytes: V0–V31 (Z0–Z31 share them), P0–P15, FFR, ZT0. */
+const bytesReg = (id: number) => (id >= V0 && id < V0 + 32) || (id >= P0 && id <= FFR) || id === ZT0
 
 const SYS_OFFSET = 140
 /** Bytes per SIMD&FP register in storage (2048-bit SVE vectors). */
@@ -203,6 +266,16 @@ export const DEFAULT_SVL = 512
 const FPSR_STREAMING = 0x0800009f
 /** FPSR.QC, the cumulative saturation bit. */
 const QC = 1 << 27
+
+/**
+ * Whether an address is a multiple of n (a power of two). Addresses go beyond 2^31, where V8 compiles % to a
+ * call to fmod; division and floor are exact and fast for them.
+ */
+const aligned = (a: number, n: number) => Math.floor(a / n) * n === a
+
+/** A scratch cell: a bigint stored here reads back as two 32-bit numbers. */
+const SC64 = new BigUint64Array(1)
+const SC32 = new Uint32Array(SC64.buffer)
 
 /** Bytes as a little-endian number, and back. */
 function bigOf(bytes: Uint8Array): bigint {
@@ -232,8 +305,12 @@ export class ArmMachine implements Machine, Cpu, Host {
   private sys: bigint[] = []
   /** SIMD&FP registers, VMAX bytes each (room for the longest SVE vector); the low `vlen` bytes are live. */
   private vr = new Uint8Array(32 * VMAX)
+  private vr16 = new Uint16Array(this.vr.buffer)
+  private vr32 = new Uint32Array(this.vr.buffer)
+  private vr64 = new BigUint64Array(this.vr.buffer)
   /** p0–p15 and FFR (index 16), packed: bit i of a predicate governs vector byte i. */
   private pr = new Uint8Array(17 * PMAX)
+  private pr32 = new Uint32Array(this.pr.buffer)
   /** The largest vector length the settings allow, in bytes. */
   private maxVl = DEFAULT_VL / 8
   /** The non-streaming vector length in bytes: maxVl, or less when ZCR_EL1.LEN asks for less. */
@@ -249,13 +326,18 @@ export class ArmMachine implements Machine, Cpu, Host {
   private zav = 0
   /** The ZA array: svlen rows of svlen bytes, each row maxSvl bytes apart. */
   private za = new Uint8Array((DEFAULT_SVL / 8) ** 2)
+  private za32 = new Uint32Array(this.za.buffer)
   /** ZT0, 64 bytes. */
   private zt = new Uint8Array(64)
+  private zt32 = new Uint32Array(this.zt.buffer)
   private fpcrv = 0
   private fpsrv = 0
   private mem = new WideMemory()
   private status = new Uint8Array(REGISTER_COUNT)
-  private written = new Map<number, number>()
+  /** For each 4 KB page, how many logged stores touched each of its words (the memory panel's highlights). */
+  private written = new Map<number, Uint32Array>()
+  private wKey = -1
+  private wPage: Uint32Array | undefined = undefined
 
   private pcReg = 0
   /** Internal address of the instruction being executed. */
@@ -284,7 +366,6 @@ export class ArmMachine implements Machine, Cpu, Host {
   private log: StepLog = new StepLog()
 
   os: OsState = INITIAL_OS
-  readonly files = new Map<number, OpenFile>()
   /** Every byte typed so far; os.stdinPos says how far the program has read. */
   private stdin: number[] = []
   /** stdin length before the waiting step's input arrived. */
@@ -299,13 +380,16 @@ export class ArmMachine implements Machine, Cpu, Host {
     const sbits = options?.settings?.svl ?? DEFAULT_SVL
     this.maxSvl = Math.max(16, Math.min(VMAX, 2 ** Math.floor(Math.log2(sbits / 8))))
     this.za = new Uint8Array(this.maxSvl * this.maxSvl)
+    this.za32 = new Uint32Array(this.za.buffer)
     const ins = program.instructions
     this.textStart = ins.find((i) => i.addr < TOP)?.addr ?? TEXT_BASE
     if (this.textStart > TEXT_BASE) this.textStart = TEXT_BASE
     for (const i of ins) {
       this.byAddr.set(i.addr, i)
       const d = decodeWord(i.word)
-      const slot: Slot = d ? { exec: d.instr.spec.exec, fields: d.fields, line: i.line, needs: needsOf(d.instr.spec, d.fields) } : { exec: (c) => c.undefinedInstr(), fields: {}, line: i.line, needs: 0 }
+      const slot: Slot = d
+        ? { exec: d.instr.spec.exec, fields: d.fields, prep: d.instr.spec.prepare?.(d.fields), line: i.line, needs: needsOf(d.instr.spec, d.fields) }
+        : { exec: (c) => c.undefinedInstr(), fields: {}, prep: undefined, line: i.line, needs: 0 }
       if (i.addr >= TOP) {
         this.ktext[(i.addr - KTEXT_BASE) / 4] = slot
         this.ktextEnd = Math.max(this.ktextEnd, i.addr + 4)
@@ -316,7 +400,7 @@ export class ArmMachine implements Machine, Cpu, Host {
       }
     }
     for (const sec of program.sections ?? []) this.regions.push({ start: sec.addr, end: pageUp(sec.addr + sec.size), write: !/text|rodata/.test(sec.name) })
-    for (let i = 0; i < UNDO_LIMIT; i++) this.ring.push(new StepLog())
+    for (let i = 0; i < RING; i++) this.ring.push(new StepLog())
     this.reset()
   }
 
@@ -353,6 +437,8 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.sp0 = BigInt(INITIAL_SP)
     this.status.fill(IDLE)
     this.written.clear()
+    this.wKey = -1
+    this.wPage = undefined
     this.pcReg = this.program.entry
     const sym = this.program.symbols
     if (sym._start === undefined && sym.main !== undefined && this.program.entry === sym.main) {
@@ -371,7 +457,6 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.stdin = []
     this.waitStdinLen = null
     this.monitor = null
-    this.files.clear()
     if (!this.executable(this.pcReg)) this.haltReason = { kind: 'dropped-off' }
   }
 
@@ -410,8 +495,8 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   private slotAt(addr: number): Slot | undefined {
-    if (addr >= TOP) return addr < this.ktextEnd && addr % 4 === 0 ? this.ktext[(addr - KTEXT_BASE) / 4] : undefined
-    return addr >= this.textStart && addr < this.textEnd && addr % 4 === 0 ? this.text[(addr - this.textStart) / 4] : undefined
+    if (addr >= TOP) return addr < this.ktextEnd && aligned(addr, 4) ? this.ktext[(addr - KTEXT_BASE) / 4] : undefined
+    return addr >= this.textStart && addr < this.textEnd && aligned(addr, 4) ? this.text[(addr - this.textStart) / 4] : undefined
   }
 
   private isStub(addr: number): boolean {
@@ -450,13 +535,14 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   private beginLog(): StepLog {
-    const log = this.ring[(this.ringHead + this.ringCount) % UNDO_LIMIT]!
+    const log = this.ring[(this.ringHead + this.ringCount) % RING]!
     log.reset(this.pcReg)
     log.prevSteps = this.stepCount
     log.prevHalt = this.haltReason
     log.os = this.os
     log.stdinLen = this.stdin.length
     log.monitor = this.monitor
+    log.badTarget = this.badTarget
     this.log = log
     return log
   }
@@ -467,7 +553,7 @@ export class ArmMachine implements Machine, Cpu, Host {
       this.waitStdinLen = null
     }
     if (this.ringCount < UNDO_LIMIT) this.ringCount++
-    else this.ringHead = (this.ringHead + 1) % UNDO_LIMIT
+    else this.ringHead = (this.ringHead + 1) % RING
   }
 
   private execute(log: StepLog): void {
@@ -479,7 +565,7 @@ export class ArmMachine implements Machine, Cpu, Host {
       const slot = this.slotAt(pc)
       if (slot && (pc < TOP || this.elv === 1)) {
         if (slot.needs) this.checkMode(slot.needs)
-        slot.exec(this, slot.fields)
+        slot.exec(this, slot.fields, slot.prep)
       }
       else if (this.isStub(pc)) this.callStub(pc)
       else this.fetchFault(pc)
@@ -508,6 +594,11 @@ export class ArmMachine implements Machine, Cpu, Host {
         this.commit()
         return
       }
+      // A fault in the simulator itself: take back what the step did, so the machine and its undo log stay
+      // consistent, and let the error surface.
+      this.rollback(log)
+      this.stepCount = log.prevSteps
+      this.haltReason = log.prevHalt
       throw e
     }
   }
@@ -582,22 +673,32 @@ export class ArmMachine implements Machine, Cpu, Host {
   private info(log: StepLog): StepInfo {
     const writes: RegChange[] = []
     const seen = new Set<number>()
-    for (let i = 0; i < log.regIds.length; i++) {
+    for (let i = 0; i < log.regN; i++) {
       const id = log.regIds[i]!
+      const old = log.regOld[i]!
+      if (id === NZCV_LOG) {
+        for (let f = FLAG_N; f <= FLAG_V; f++) {
+          if (seen.has(f)) continue
+          seen.add(f)
+          writes.push({ id: f, before: ((old as number) >> (FLAG_V - f)) & 1, after: this.rawReg(f) })
+        }
+        continue
+      }
       if (seen.has(id)) continue
       seen.add(id)
-      writes.push({ id, before: log.regOld[i]!, after: this.rawReg(id) })
+      const before = id >= 0 && id <= SP ? log.x64[i]! : bytesReg(id) ? bigOf(log.kept(old as number, log.regLen[i]!)) : old
+      writes.push({ id, before, after: this.rawReg(id) })
       // z<n> is the same register as v<n>: report it under both names.
-      if (id >= V0 && id < V0 + 32) writes.push({ id: id - V0 + Z0, before: log.regOld[i]!, after: this.rawReg(id) })
+      if (id >= V0 && id < V0 + 32) writes.push({ id: id - V0 + Z0, before, after: this.rawReg(id) })
     }
-    const reads = new Set(log.reads)
-    for (const id of log.reads) if (id >= V0 && id < V0 + 32) reads.add(id - V0 + Z0)
+    const reads = new Set(log.reads.slice(0, log.readN))
+    for (const id of [...reads]) if (id >= V0 && id < V0 + 32) reads.add(id - V0 + Z0)
     return {
       pc: log.pc,
       nextPc: this.pcReg,
       reads: [...reads],
       writes,
-      memory: log.memAddr.map((addr, i) => ({ addr, size: log.memSize[i]! })),
+      memory: log.memAddr.slice(0, log.memN).map((addr, i) => ({ addr, size: log.memSize[i]! })),
       output: log.output,
       sleepMs: log.sleep,
       halted: this.haltReason,
@@ -612,7 +713,7 @@ export class ArmMachine implements Machine, Cpu, Host {
     }
     if (this.ringCount === 0) return null
     this.ringCount--
-    const log = this.ring[(this.ringHead + this.ringCount) % UNDO_LIMIT]!
+    const log = this.ring[(this.ringHead + this.ringCount) % RING]!
     const undone = { pc: log.pc, output: log.output }
     this.stdin.length = Math.min(this.stdin.length, log.stdinLen)
     this.rollback(log)
@@ -622,25 +723,35 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   private rollback(log: StepLog): void {
-    for (let i = log.memAddr.length - 1; i >= 0; i--) {
+    for (let i = log.memN - 1; i >= 0; i--) {
       const a = log.memAddr[i]!
       const size = log.memSize[i]!
       this.rawStore(a, size, log.memOld[i]!)
-      for (let w = Math.floor(a / 4) * 4; w < a + size; w += 4) {
-        const n = (this.written.get(w) ?? 1) - 1
-        if (n <= 0) this.written.delete(w)
-        else this.written.set(w, n)
-      }
+      this.countWrites(a, size, -1)
     }
-    for (let i = log.regIds.length - 1; i >= 0; i--) this.setRawReg(log.regIds[i]!, log.regOld[i]!)
-    for (let i = log.zaRows.length - 1; i >= 0; i--) this.za.set(log.zaOld[i]!, log.zaRows[i]! * this.maxSvl)
+    for (let i = log.regN - 1; i >= 0; i--) {
+      const id = log.regIds[i]!
+      // X0–X30 and SP (31) keep their old values in x64, vectors theirs in bytes.
+      this.restoreReg(id, id >= 0 && id <= SP ? log.x64[i]! : bytesReg(id) ? log.kept(log.regOld[i] as number, log.regLen[i]!) : log.regOld[i]!)
+    }
+    for (let i = log.zaN - 1; i >= 0; i--) this.za.set(log.kept(log.zaOld[i]!, log.zaLen[i]!), log.zaRows[i]! * this.maxSvl)
     if (log.vecSnap) this.vr.set(log.vecSnap)
     if (log.predSnap) this.pr.set(log.predSnap)
     if (log.zaSnap) this.za.set(log.zaSnap)
     if (log.ztSnap) this.zt.set(log.ztSnap)
-    for (let i = log.statusIds.length - 1; i >= 0; i--) this.status[log.statusIds[i]!] = log.statusOld[i]!
+    for (let i = log.statusN - 1; i >= 0; i--) this.status[log.statusIds[i]!] = log.statusOld[i]!
+    if (log.vfs) {
+      // The IDE's file store can delete a file that the step created.
+      const store = this.env.files
+      for (let i = log.vfs.length - 1; i >= 0; i--) {
+        const [name, data] = log.vfs[i]!
+        if (data) store.write(name, data, false)
+        else store.remove?.(name)
+      }
+    }
     this.os = log.os
     this.monitor = log.monitor
+    this.badTarget = log.badTarget
     this.pcReg = log.pc
     log.reset(log.pc)
   }
@@ -665,13 +776,11 @@ export class ArmMachine implements Machine, Cpu, Host {
 
   lastRowWrites(id: number): { row: number; before: Uint8Array }[] {
     if (id !== ZA || this.ringCount === 0) return []
-    const log = this.ring[(this.ringHead + this.ringCount - 1) % UNDO_LIMIT]!
+    const log = this.ring[(this.ringHead + this.ringCount - 1) % RING]!
     const out = new Map<number, Uint8Array>()
     // Enabling or disabling ZA cleared all of it; otherwise the rows written, the first old value of each.
     if (log.zaSnap) for (let r = 0; r < this.svlen; r++) out.set(r, log.zaSnap.slice(r * this.maxSvl, r * this.maxSvl + this.svlen))
-    log.zaRows.forEach((r, i) => {
-      if (!out.has(r)) out.set(r, log.zaOld[i]!)
-    })
+    for (let i = 0; i < log.zaN; i++) if (!out.has(log.zaRows[i]!)) out.set(log.zaRows[i]!, log.kept(log.zaOld[i]!, log.zaLen[i]!).slice())
     return [...out].map(([row, before]) => ({ row, before }))
   }
 
@@ -689,11 +798,29 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   everWritten(addr: number): boolean {
-    return this.written.has(Math.floor(addr / 4) * 4)
+    const page = this.written.get(Math.floor(addr / PAGE))
+    return page !== undefined && page[(addr - Math.floor(addr / PAGE) * PAGE) >> 2]! > 0
   }
 
   writtenWords(): number[] {
-    return [...this.written.keys()].sort((a, b) => a - b)
+    const out: number[] = []
+    for (const key of [...this.written.keys()].sort((a, b) => a - b)) {
+      const page = this.written.get(key)!
+      for (let i = 0; i < PAGE / 4; i++) if (page[i]) out.push(key * PAGE + i * 4)
+    }
+    return out
+  }
+
+  /** Count logged stores to the words of [a, a + size) up (d = 1) or back down (d = −1, undo). */
+  private countWrites(a: number, size: number, d: number): void {
+    for (let w = Math.floor(a / 4) * 4; w < a + size; w += 4) {
+      const key = Math.floor(w / PAGE)
+      let page = key === this.wKey ? this.wPage : this.written.get(key)
+      if (!page) this.written.set(key, (page = new Uint32Array(PAGE / 4)))
+      this.wKey = key
+      this.wPage = page
+      page[(w - key * PAGE) >> 2]! += d
+    }
   }
 
   heapBlocks(): { addr: number; size: number; index: number; note?: string }[] {
@@ -725,6 +852,15 @@ export class ArmMachine implements Machine, Cpu, Host {
     if (id <= FLAG_V) return (this.nzcv >> (FLAG_V - id)) & 1
     if (id >= SYS_OFFSET) return this.sysValue(id)
     return 0
+  }
+
+  /** Put back a value an undo entry holds. */
+  private restoreReg(id: number, old: OldValue): void {
+    if (id === NZCV_LOG) this.nzcv = old as number
+    else if (!(old instanceof Uint8Array)) this.setRawReg(id, old)
+    else if (id >= V0 && id < V0 + 32) this.vr.set(old, (id - V0) * VMAX)
+    else if (id >= P0 && id <= FFR) this.pr.set(old, (id - P0) * PMAX)
+    else if (id === ZT0) this.zt.set(old)
   }
 
   private setRawReg(id: number, v: RegValue): void {
@@ -822,22 +958,37 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   private markRead(id: number): void {
-    if (this.recordReads) this.log.reads.push(id)
+    const log = this.log
+    if (this.recordReads) log.reads[log.readN++] = id
     if (this.status[id] === IDLE) {
-      this.log.statusIds.push(id)
-      this.log.statusOld.push(IDLE)
+      log.statusIds[log.statusN] = id
+      log.statusOld[log.statusN++] = IDLE
       this.status[id] = READ
     }
   }
 
   private markWrite(id: number, old: RegValue): void {
-    this.log.regIds.push(id)
-    this.log.regOld.push(old)
-    if (this.status[id] !== WRITTEN) {
-      this.log.statusIds.push(id)
-      this.log.statusOld.push(this.status[id]!)
-      this.status[id] = WRITTEN
-    }
+    const log = this.log
+    log.regIds[log.regN] = id
+    log.regOld[log.regN++] = old
+    if (this.status[id] !== WRITTEN) this.statusWritten(id)
+  }
+
+  /** markWrite for a vector, predicate or ZT0 register: its old bytes are [from, from + len) of src. */
+  private markWriteBytes(id: number, src: Uint8Array, srcWords: Uint32Array, from: number, len: number): void {
+    const log = this.log
+    const i = log.regN++
+    log.regIds[i] = id
+    log.regOld[i] = log.keep(src, srcWords, from, len)
+    log.regLen[i] = len
+    if (this.status[id] !== WRITTEN) this.statusWritten(id)
+  }
+
+  private statusWritten(id: number): void {
+    const log = this.log
+    log.statusIds[log.statusN] = id
+    log.statusOld[log.statusN++] = this.status[id]!
+    this.status[id] = WRITTEN
   }
 
   private writeSys(id: number, v: bigint): void {
@@ -847,17 +998,52 @@ export class ArmMachine implements Machine, Cpu, Host {
 
   /** The low `bytes` bytes of SIMD&FP register n as a little-endian number. */
   private vbig(n: number, bytes: number): bigint {
-    const base = n * VMAX
+    const q = n * (VMAX / 8)
+    switch (bytes) {
+      case 8:
+        return this.vr64[q]!
+      case 16:
+        return this.vr64[q]! | (this.vr64[q + 1]! << 64n)
+      case 4:
+        return BigInt(this.vr32[2 * q]!)
+      case 2:
+        return BigInt(this.vr16[4 * q]!)
+      case 1:
+        return BigInt(this.vr[8 * q]!)
+    }
     let v = 0n
-    for (let i = bytes - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.vr[base + i]!)
+    if (bytes % 8 === 0) for (let i = bytes / 8 - 1; i >= 0; i--) v = (v << 64n) | this.vr64[q + i]!
+    else for (let i = bytes - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.vr[8 * q + i]!)
     return v
   }
+  /** Write the low `bytes` bytes of register n (the bytes above stay as they are). */
   private vstore(n: number, bytes: number, v: bigint): void {
-    const base = n * VMAX
-    for (let i = 0; i < bytes; i++) {
-      this.vr[base + i] = Number(v & 0xffn)
-      v >>= 8n
+    const q = n * (VMAX / 8)
+    switch (bytes) {
+      case 8:
+        // A BigUint64Array keeps the value modulo 2^64.
+        this.vr64[q] = v
+        return
+      case 4:
+      case 2:
+      case 1:
+        // Through the scratch cell: Number() of a bigint is a slow runtime call.
+        SC64[0] = v
+        if (bytes === 4) this.vr32[2 * q] = SC32[0]!
+        else if (bytes === 2) this.vr16[4 * q] = SC32[0]!
+        else this.vr[8 * q] = SC32[0]!
+        return
     }
+    if (bytes % 8 === 0)
+      for (let i = 0; i < bytes / 8; i++) {
+        this.vr64[q + i] = BigInt.asUintN(64, v)
+        v >>= 64n
+      }
+    else
+      for (let i = 0; i < bytes; i++) {
+        this.vr[8 * q + i] = Number(v & 0xffn)
+        v >>= 8n
+      }
   }
 
   /** Predicate n (16 = FFR) as a number: bit i governs vector byte i. */
@@ -888,18 +1074,32 @@ export class ArmMachine implements Machine, Cpu, Host {
     return this.za.slice(r * this.maxSvl, r * this.maxSvl + this.svlen)
   }
   zaWrite(r: number, data: Uint8Array): void {
-    const log = this.log
-    if (!log.regIds.includes(ZA)) this.markWrite(ZA, 0n)
-    log.zaRows.push(r)
-    log.zaOld.push(this.za.slice(r * this.maxSvl, r * this.maxSvl + this.svlen))
+    this.logZaRow(r)
     this.za.set(data.subarray(0, this.svlen), r * this.maxSvl)
+  }
+  zaLanes(r: number, es: number): bigint[] {
+    this.markRead(ZA)
+    return lanesAt(this.za, r * this.maxSvl, this.svlen >> es, es)
+  }
+  zaSetLanes(r: number, vals: bigint[], es: number): void {
+    this.logZaRow(r)
+    storeLanes(vals.length > this.svlen >> es ? vals.slice(0, this.svlen >> es) : vals, es, this.za, r * this.maxSvl)
+  }
+  /** Keep row r's old bytes for undo. */
+  private logZaRow(r: number): void {
+    const log = this.log
+    // One ZA entry per step (clearZa makes one too, with the whole array in zaSnap).
+    if (!log.zaN && !log.zaSnap) this.markWrite(ZA, 0n)
+    log.zaRows[log.zaN] = r
+    log.zaOld[log.zaN] = log.keep(this.za, this.za32, r * this.maxSvl, this.svlen)
+    log.zaLen[log.zaN++] = this.svlen
   }
   zt0Read(): Uint8Array {
     this.markRead(ZT0)
     return this.zt.slice()
   }
   zt0Write(data: Uint8Array): void {
-    this.markWrite(ZT0, bigOf(this.zt))
+    this.markWriteBytes(ZT0, this.zt, this.zt32, 0, 64)
     this.zt.set(data.subarray(0, 64))
   }
   pread(n: number): Uint8Array {
@@ -910,10 +1110,30 @@ export class ArmMachine implements Machine, Cpu, Host {
     return out
   }
   pwrite(n: number, bits: Uint8Array): void {
-    this.markWrite(P0 + n, this.pbig(n))
     const base = n * PMAX
+    this.markWriteBytes(P0 + n, this.pr, this.pr32, base, this.vlen / 8)
     this.pr.fill(0, base, base + this.vlen / 8)
     for (let i = 0; i < this.vlen; i++) if (bits[i]) this.pr[base + (i >> 3)]! |= 1 << (i & 7)
+  }
+
+  pflags(n: number, es: number): boolean[] {
+    this.markRead(P0 + n)
+    const out = new Array<boolean>(this.vlen >> es)
+    const base = n * PMAX
+    for (let i = 0; i < out.length; i++) {
+      const bit = i << es
+      out[i] = ((this.pr[base + (bit >> 3)]! >> (bit & 7)) & 1) === 1
+    }
+    return out
+  }
+  psetFlags(n: number, flags: boolean[], es: number): void {
+    const base = n * PMAX
+    this.markWriteBytes(P0 + n, this.pr, this.pr32, base, this.vlen / 8)
+    this.pr.fill(0, base, base + this.vlen / 8)
+    for (let i = 0; i < flags.length; i++) {
+      const bit = i << es
+      if (flags[i]) this.pr[base + (bit >> 3)]! |= 1 << (bit & 7)
+    }
   }
 
   vread(n: number, bytes: number): Uint8Array {
@@ -921,24 +1141,37 @@ export class ArmMachine implements Machine, Cpu, Host {
     return this.vr.slice(n * VMAX, n * VMAX + bytes)
   }
   vwrite(n: number, data: Uint8Array): void {
-    const id = V0 + n
-    this.markWrite(id, this.vbig(n, this.vlen))
     const base = n * VMAX
+    this.markWriteBytes(V0 + n, this.vr, this.vr32, base, this.vlen)
     this.vr.set(data, base)
     this.vr.fill(0, base + data.length, base + this.vlen)
+  }
+  vlanes(n: number, bytes: number, es: number): bigint[] {
+    this.markRead(V0 + n)
+    return lanesAt(this.vr, n * VMAX, Math.floor(bytes / (ESIZE[es]! / 8)), es)
+  }
+  vsetLanes(n: number, vals: bigint[], es: number): void {
+    const base = n * VMAX
+    this.markWriteBytes(V0 + n, this.vr, this.vr32, base, this.vlen)
+    storeLanes(vals, es, this.vr, base)
+    this.vr.fill(0, base + (vals.length * ESIZE[es]!) / 8, base + this.vlen)
   }
   vget(n: number, bytes: number): bigint {
     this.markRead(V0 + n)
     return this.vbig(n, bytes)
   }
   vset(n: number, bytes: number, v: bigint, merge?: number): void {
-    const id = V0 + n
+    const base = n * VMAX
     // FEAT_AFP's FPCR.NEP: a scalar result keeps the other bytes of the source register `merge`.
-    const keep = merge !== undefined && this.fpcrv & NEP ? this.vbig(merge, 16) : 0n
-    if (merge !== undefined && this.fpcrv & NEP && merge !== n) this.markRead(V0 + merge)
-    this.markWrite(id, this.vbig(n, this.vlen))
-    const mask = (1n << BigInt(bytes * 8)) - 1n
-    this.vstore(n, this.vlen, (keep & ~mask) | (v & mask))
+    const keep = merge !== undefined && this.fpcrv & NEP ? this.vbig(merge, 16) : null
+    if (keep !== null && merge !== n) this.markRead(V0 + merge!)
+    this.markWriteBytes(V0 + n, this.vr, this.vr32, base, this.vlen)
+    this.vr.fill(0, base, base + this.vlen)
+    if (keep === null) this.vstore(n, bytes, v)
+    else {
+      const mask = (1n << BigInt(bytes * 8)) - 1n
+      this.vstore(n, 16, (keep & ~mask) | (v & mask))
+    }
   }
   fpEnv(): FpEnv {
     this.markRead(FPCR_ID)
@@ -976,19 +1209,33 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
   setX(n: number, v: bigint): void {
     if (n === 31) return
-    this.markWrite(n, this.xr[n]!)
+    this.markWriteX(n, this.xr[n]!)
     this.xr[n] = v
   }
   setXsp(n: number, v: bigint): void {
     if (n !== 31) return this.setX(n, v)
     v = BigInt.asUintN(64, v)
     if (this.elv && this.spsel) {
-      this.markWrite(SP, this.sp1)
+      this.markWriteX(SP, this.sp1)
       this.sp1 = v
     } else {
-      this.markWrite(SP, this.sp0)
+      this.markWriteX(SP, this.sp0)
       this.sp0 = v
     }
+  }
+
+  /** markWrite for an X register or SP, keeping the old value in the log's typed array. */
+  private markWriteX(id: number, old: bigint): void {
+    const log = this.log
+    const i = log.regN++
+    log.regIds[i] = id
+    if (i >= log.x64.length) {
+      const grown = new BigUint64Array(log.x64.length * 2)
+      grown.set(log.x64)
+      log.x64 = grown
+    }
+    log.x64[i] = old
+    if (this.status[id] !== WRITTEN) this.statusWritten(id)
   }
   r(sf: number, n: number): bigint {
     return sf ? this.x(n) : this.x(n) & 0xffffffffn
@@ -1017,8 +1264,10 @@ export class ArmMachine implements Machine, Cpu, Host {
     return this.nzcv
   }
   setFlags(nzcv: number): void {
-    const old = this.nzcv
-    for (let id = FLAG_N; id <= FLAG_V; id++) this.markWrite(id, (old >> (FLAG_V - id)) & 1)
+    const log = this.log
+    log.regIds[log.regN] = NZCV_LOG
+    log.regOld[log.regN++] = this.nzcv
+    for (let id = FLAG_N; id <= FLAG_V; id++) if (this.status[id] !== WRITTEN) this.statusWritten(id)
     this.nzcv = nzcv & 15
   }
   cond(c: number): boolean {
@@ -1096,13 +1345,38 @@ export class ArmMachine implements Machine, Cpu, Host {
     return 0
   }
 
+  /**
+   * The permission of the last page checked, while the exception level and the OS state (heap, mappings) stay
+   * the same: the memory map's ranges never overlap, so a page wholly inside one has its permission throughout.
+   */
+  private permKey = -1
+  private permEl = 0
+  private permOs: OsState | null = null
+  private permVal = 0
+
+  /** permission(), remembering whole pages. */
+  private pagePermission(a: number, size: number, el: number): number {
+    const key = Math.floor(a / PAGE)
+    const inPage = a - key * PAGE + size <= PAGE
+    if (key === this.permKey && el === this.permEl && this.os === this.permOs && inPage) return this.permVal
+    const whole = this.permission(key * PAGE, PAGE, el)
+    if (whole > 0) {
+      this.permKey = key
+      this.permEl = el
+      this.permOs = this.os
+      this.permVal = whole
+      if (inPage) return whole
+    }
+    return this.permission(a, size, el)
+  }
+
   private check(va: bigint, size: number, write: boolean, acc: number): number {
     const a = addrOf(va)
     const el = acc & ACC.unprivileged ? 0 : this.elv
     const ec = this.elv ? EC.dataAbortSame : EC.dataAbortLower
     const wnr = write ? 1 << 6 : 0
     if (a === null) throw new ArmFault('sigsegv', L(`段错误（SIGSEGV）：${hex16(va)} 不是有效的地址`, `Segmentation fault (SIGSEGV): ${hex16(va)} is not a valid address`), ec, wnr | 0x4, va)
-    if (acc & ACC.aligned ? a % size !== 0 : acc & ACC.lse2 ? Math.floor(a / 16) !== Math.floor((a + size - 1) / 16) : false)
+    if (acc & ACC.aligned ? !aligned(a, size) : acc & ACC.lse2 ? Math.floor(a / 16) !== Math.floor((a + size - 1) / 16) : false)
       throw new ArmFault(
         'sigbus',
         L(`总线错误（SIGBUS）：地址 ${hex16(va)} 没有按 ${size} 字节对齐（独占、获取/释放和原子访问必须对齐）`, `Bus error (SIGBUS): address ${hex16(va)} is not ${size}-byte aligned (exclusive, acquire/release and atomic accesses must be)`),
@@ -1110,7 +1384,7 @@ export class ArmMachine implements Machine, Cpu, Host {
         wnr | 0x21,
         va,
       )
-    const p = this.permission(a, size, el)
+    const p = this.pagePermission(a, size, el)
     if (p === 3 || (p === 1 && !write)) return a
     if (p === -1) throw new ArmFault('sigsegv', L(`段错误（SIGSEGV）：用户态（EL0）不能访问内核地址 ${hex16(va)}`, `Segmentation fault (SIGSEGV): user mode (EL0) cannot access kernel address ${hex16(va)}`), ec, wnr | 0xf, va)
     if (p === 1) throw new ArmFault('sigsegv', L(`段错误（SIGSEGV）：地址 ${hex16(va)} 是只读的（代码或 .rodata）`, `Segmentation fault (SIGSEGV): address ${hex16(va)} is read-only (code or .rodata)`), ec, wnr | 0xf, va)
@@ -1147,6 +1421,50 @@ export class ArmMachine implements Machine, Cpu, Host {
     this.mem.setDword(a + 8, (v >> 64n) & 0xffff_ffff_ffff_ffffn)
   }
 
+  /** The machine address of [va, va + size) when a plain access can read (or write) all of it, else null. */
+  private blockAt(va: bigint, size: number, write: boolean): number | null {
+    const a = addrOf(va)
+    if (a === null) return null
+    const p = this.pagePermission(a, size, this.elv)
+    return p === 3 || (p === 1 && !write) ? a : null
+  }
+
+  loadBlock(addr: bigint, size: number): Uint8Array | null {
+    const a = this.blockAt(addr, size, false)
+    if (a === null) return null
+    const out = new Uint8Array(size)
+    let i = 0
+    for (; i + 4 <= size; i += 4) {
+      const w = this.mem.getWord(a + i)
+      out[i] = w
+      out[i + 1] = w >>> 8
+      out[i + 2] = w >>> 16
+      out[i + 3] = w >>> 24
+    }
+    for (; i < size; i++) out[i] = this.mem.getByte(a + i)
+    return out
+  }
+
+  storeBlock(addr: bigint, data: Uint8Array): boolean {
+    const size = data.length
+    const a = this.blockAt(addr, size, true)
+    if (a === null) return false
+    const log = this.log
+    // Logged and written a doubleword at a time, then byte by byte.
+    for (let i = 0; i < size; ) {
+      const n = size - i >= 8 ? 8 : 1
+      log.memAddr[log.memN] = a + i
+      log.memSize[log.memN] = n
+      log.memOld[log.memN++] = this.rawLoad(a + i, n)
+      // Counted per entry, as undo uncounts them.
+      this.countWrites(a + i, n, 1)
+      this.rawStore(a + i, n, n === 8 ? lanesAt(data, i, 1, 3)[0]! : BigInt(data[i]!))
+      i += n
+    }
+    if (this.monitor && a < this.monitor.addr + this.monitor.size && a + size > this.monitor.addr) this.monitor = null
+    return true
+  }
+
   load(addr: bigint, size: number, acc = 0): bigint {
     return this.rawLoad(this.check(addr, size, false, acc), size)
   }
@@ -1163,10 +1481,10 @@ export class ArmMachine implements Machine, Cpu, Host {
   store(addr: bigint, size: number, value: bigint, acc = 0): void {
     const a = this.check(addr, size, true, acc)
     const log = this.log
-    log.memAddr.push(a)
-    log.memSize.push(size)
-    log.memOld.push(this.rawLoad(a, size))
-    for (let w = Math.floor(a / 4) * 4; w < a + size; w += 4) this.written.set(w, (this.written.get(w) ?? 0) + 1)
+    log.memAddr[log.memN] = a
+    log.memSize[log.memN] = size
+    log.memOld[log.memN++] = this.rawLoad(a, size)
+    this.countWrites(a, size, 1)
     this.rawStore(a, size, value)
     // A store by this CPU to the monitored block clears the exclusive monitor, as another CPU's would.
     if (this.monitor && a < this.monitor.addr + this.monitor.size && a + size > this.monitor.addr) this.monitor = null
@@ -1181,7 +1499,23 @@ export class ArmMachine implements Machine, Cpu, Host {
   }
 
   svc(_imm: number): void {
-    syscall(this)
+    // File contents live in the environment's file store, outside the machine: keep what undo needs before a
+    // call on a file (only those calls, so the others stay cheap).
+    const nr = Number(this.xr[8]! & 0xffffffffn)
+    if (!(nr === 56 || nr === 57 || nr === 62 || ((nr === 63 || nr === 64) && (this.xr[0]! & 0xffffffffn) > 2n))) return syscall(this)
+    const log = this.log
+    if (!log.vfs) log.vfs = []
+    const store = this.env.files
+    const before = new Map(store.list().map((name) => [name, store.read(name)]))
+    try {
+      syscall(this)
+    } finally {
+      // The store replaces a file's bytes when it is written: an entry that changed is a new array.
+      for (const name of new Set([...before.keys(), ...store.list()])) {
+        const old = before.get(name) ?? null
+        if (store.read(name) !== old && !log.vfs!.some(([n]) => n === name)) log.vfs!.push([name, old])
+      }
+    }
   }
 
   brk(imm: number): never {
@@ -1281,8 +1615,8 @@ export class ArmMachine implements Machine, Cpu, Host {
     const log = this.log
     log.vecSnap ??= this.vr.slice()
     log.predSnap ??= this.pr.slice()
-    for (let n = 0; n < 32; n++) this.markWrite(V0 + n, this.vbig(n, this.vlen))
-    for (let n = 0; n <= 16; n++) this.markWrite(P0 + n, this.pbig(n))
+    for (let n = 0; n < 32; n++) this.markWriteBytes(V0 + n, this.vr, this.vr32, n * VMAX, this.vlen)
+    for (let n = 0; n <= 16; n++) this.markWriteBytes(P0 + n, this.pr, this.pr32, n * PMAX, this.vlen / 8)
     this.vr.fill(0)
     this.pr.fill(0)
   }
@@ -1293,7 +1627,7 @@ export class ArmMachine implements Machine, Cpu, Host {
     log.zaSnap ??= this.za.slice()
     log.ztSnap ??= this.zt.slice()
     this.markWrite(ZA, 0n)
-    this.markWrite(ZT0, bigOf(this.zt))
+    this.markWriteBytes(ZT0, this.zt, this.zt32, 0, 64)
     this.za.fill(0)
     this.zt.fill(0)
   }

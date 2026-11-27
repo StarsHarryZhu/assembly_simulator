@@ -581,17 +581,25 @@ const WHILES: WhileOp[] = [
   { m: 'whilels', U: 1, lt: 1, eq: 1, down: false, cond: CONDS.ls! },
 ]
 
-/** How many elements a WHILE makes true, counting from the start (or, for the decrementing ones, from the end). */
+/**
+ * How many elements a WHILE makes true, counting from the start (or, for the decrementing ones, from the end).
+ * The first operand steps toward the second one element at a time and the run stops at the first failed
+ * compare, so the count is their distance (plus one for a non-strict compare), capped at the element count;
+ * a non-strict compare against the last value of the range never fails, since the first operand wraps round
+ * to the other end.
+ */
 function whileCount(op: WhileOp, a0: bigint, b0: bigint, bits: number, elements: number): number {
-  const wrap = (v: bigint) => (op.U ? BigInt.asUintN(bits, v) : BigInt.asIntN(bits, v))
-  let a = wrap(a0)
-  const b = wrap(b0)
-  let n = 0
-  while (n < elements && op.cond(a, b)) {
-    n++
-    a = wrap(op.down ? a - 1n : a + 1n)
+  const a = op.U ? BigInt.asUintN(bits, a0) : BigInt.asIntN(bits, a0)
+  const b = op.U ? BigInt.asUintN(bits, b0) : BigInt.asIntN(bits, b0)
+  if (!op.cond(a, b)) return 0
+  // lt, lo, gt and hi (the encodings whose lt and eq bits differ) are strict; le, ls, ge and hs are not.
+  const strict = op.lt !== op.eq
+  if (!strict) {
+    const edge = op.down ? (op.U ? 0n : -(1n << BigInt(bits - 1))) : op.U ? (1n << BigInt(bits)) - 1n : (1n << BigInt(bits - 1)) - 1n
+    if (b === edge) return elements
   }
-  return n
+  const k = (op.down ? a - b : b - a) + (strict ? 0n : 1n)
+  return k >= BigInt(elements) ? elements : Number(k)
 }
 const whileOps = (c: Cpu, f: Fields, sf: number) => [sf ? c.x(f.Rn!) : c.r(0, f.Rn!), sf ? c.x(f.Rm!) : c.r(0, f.Rm!)] as const
 
@@ -611,9 +619,11 @@ for (const op of WHILES) {
       const n = count(c, es)
       const [a, b] = whileOps(c, f, f.sf!)
       const k = whileCount(op, a, b, f.sf ? 64 : 32, n)
-      const res = Array.from({ length: n }, (_, i) => (op.down ? i >= n - k : i < k))
+      const res = new Array<boolean>(n)
+      for (let i = 0; i < n; i++) res[i] = op.down ? i >= n - k : i < k
       pset(c, f.Pd!, res, es)
-      c.setFlags(predTest(res.map(() => true), res))
+      // PredTest under an all-true mask: N the first element, Z none true, C not the last.
+      c.setFlags((res[0] ? 8 : 0) | (k === 0 ? 4 : 0) | (res[n - 1] ? 0 : 2))
     },
   })
   // SVE2.1: a pair of predicates, the second one continuing where the first ends.
@@ -671,7 +681,8 @@ for (const rw of [0, 1]) {
       const es = f.size!
       const n = count(c, es)
       const bytes = BigInt(ESIZE[es]! / 8)
-      const diff0 = BigInt.asIntN(64, c.x(f.Rm!)) - BigInt.asIntN(64, c.x(f.Rn!))
+      // The pointers are unsigned addresses: a difference across the top of the address space is negative.
+      const diff0 = BigInt.asUintN(64, c.x(f.Rm!)) - BigInt.asUintN(64, c.x(f.Rn!))
       const diff = (rw ? (diff0 < 0n ? -diff0 : diff0) : diff0) / bytes
       const res = Array.from({ length: n }, (_, i) => (rw ? diff === 0n : diff <= 0n) || BigInt(i) < diff)
       pset(c, f.Pd!, res, es)

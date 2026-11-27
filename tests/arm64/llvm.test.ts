@@ -11,11 +11,12 @@ import { loadTables } from '../../src/isa/arm64/instructions/index'
 import { decodeWord, disassemble, encodeInstr } from '../../src/isa/arm64/encoding/table'
 import { Mismatch } from '../../src/isa/arm64/encoding/syntax'
 import { tokenize } from '../../src/isa/arm64/lexer'
-import { normalizeAsm, outOfScope, sameSveImm, unnamedSysreg } from './llvm-scope'
+import { mopsSizeZr, normalizeAsm, outOfScope, sameAlias, sameSveImm, unnamedSysreg } from './llvm-scope'
 import { assemble } from '../../src/isa/arm64/assembler'
 
 loadTables()
-const DIR = join(__dirname, 'golden', 'llvm')
+/** LLVM_DIR replays a deeper survey made elsewhere (see scripts/llvm-golden.mjs). */
+const DIR = process.env.LLVM_DIR ?? join(__dirname, 'golden', 'llvm')
 const files = readdirSync(DIR).filter((f) => f.endsWith('.json'))
 
 /** Assemble one line on its own at an address; null when our assembler refuses it. */
@@ -46,11 +47,12 @@ describe('encodings match LLVM', () => {
         }
         if (outOfScope(text)) continue
         if (ours === null) {
+          if (mopsSizeZr(text)) continue
           problems.push(`${w}: we find no instruction, LLVM decodes "${text}"`)
           continue
         }
         if (unnamedSysreg(ours, text)) continue
-        if (normalizeAsm(ours) !== normalizeAsm(text) && !sameSveImm(ours, text)) problems.push(`${w}: we print "${ours}", LLVM "${text}"`)
+        if (normalizeAsm(ours) !== normalizeAsm(text) && !sameSveImm(ours, text) && !sameAlias(ours, text)) problems.push(`${w}: we print "${ours}", LLVM "${text}"`)
         // A word LLVM accepts in a non-canonical form assembles to the canonical one; clang refuses to
         // assemble some (UNPREDICTABLE register choices), and then there is nothing to compare.
         if (canon === null) continue

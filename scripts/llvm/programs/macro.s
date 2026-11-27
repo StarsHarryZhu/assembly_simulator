@@ -57,3 +57,64 @@ COUNT = 2
     mov x15, #0x15 /* inline */ ; mov x16, #16
     pop2 x29, x30
     ret
+// LLVM's macro rules: case-sensitive names, \+ and \@, named, required and variadic parameters, quoted
+// arguments, .exitm, empty .irp arguments, and the string conditions.
+    .data
+    .macro M v
+    .byte \v
+    .endm
+    .macro m v
+    .byte \v + 1
+    .endm
+    M 1
+    m 1
+    .macro cnt
+    .byte \+, \@
+    .endm
+    cnt
+    cnt
+    .macro req a:req, b=3, rest:vararg
+    .byte \a, \b
+    .ascii "\rest"
+    .endm
+    req 1
+    req 1, 2
+    req b=5, a=4
+    req 1 2 x y
+    req 1, 2, x, y
+    .macro str s
+    .ascii "\s"
+    .endm
+    str "q r"
+    .macro early n
+    .byte \n
+    .if \n > 1
+    .exitm
+    .endif
+    .byte 0xee
+    .endmacro
+    early 1
+    early 2
+    .irp v, 1, , 3
+    .byte 0\v, \@
+    .endr
+    .rep 2
+    .byte 0x5a
+    .endr
+    .ifeqs "ab", "ab"
+    .byte 1
+    .endif
+    .ifnes "ab", "ac"
+    .byte 2
+    .endif
+    .ifnotdef NOPE
+    .byte 3
+    .endif
+    .ifc a b,a b
+    .byte 4
+    .endif
+    .purgem cnt
+    .macro cnt
+    .byte 0x77
+    .endm
+    cnt

@@ -78,8 +78,8 @@ export function mixColumns(s: Uint8Array, inv: boolean): Uint8Array {
 for (const [opc, m, desc, fn] of [
   [0b00100, 'aese', T('AES 加密一轮的前半：AddRoundKey（与 Vn 异或）、ShiftRows、SubBytes', 'AES encrypt round, first half: AddRoundKey (XOR with Vn), ShiftRows, SubBytes'), (d: Uint8Array, n: Uint8Array) => shiftRows(Uint8Array.from(d, (v, i) => AES_SBOX[v ^ n[i]!]!), false)],
   [0b00101, 'aesd', T('AES 解密一轮的前半：AddRoundKey、InvShiftRows、InvSubBytes', 'AES decrypt round, first half: AddRoundKey, InvShiftRows, InvSubBytes'), (d: Uint8Array, n: Uint8Array) => shiftRows(Uint8Array.from(d, (v, i) => AES_INV[v ^ n[i]!]!), true)],
-  [0b00110, 'aesmc', T('AES MixColumns', 'AES MixColumns'), (_d: Uint8Array, n: Uint8Array) => mixColumns(n, false)],
-  [0b00111, 'aesimc', T('AES InvMixColumns', 'AES InvMixColumns'), (_d: Uint8Array, n: Uint8Array) => mixColumns(n, true)],
+  [0b00110, 'aesmc', T('AES 加密一轮的后半：列混合（MixColumns），把 Vn 的每一列和固定矩阵在 GF(2⁸) 上相乘', 'AES encrypt round, second half: MixColumns, each column of Vn multiplied by a fixed matrix over GF(2⁸)'), (_d: Uint8Array, n: Uint8Array) => mixColumns(n, false)],
+  [0b00111, 'aesimc', T('AES 解密一轮的后半：逆列混合（InvMixColumns），把 Vn 的每一列和逆矩阵在 GF(2⁸) 上相乘', 'AES decrypt round, second half: InvMixColumns, each column of Vn multiplied by the inverse matrix over GF(2⁸)'), (_d: Uint8Array, n: Uint8Array) => mixColumns(n, true)],
 ] as [number, string, Text, (d: Uint8Array, n: Uint8Array) => Uint8Array][])
   INSTRS_.push({
     id: m,

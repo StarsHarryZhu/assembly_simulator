@@ -68,7 +68,9 @@ export function classCases(count = 3000, seed = 7): WordGroup[] {
   const rand = rng(seed)
   return CLASSES.map((c) => {
     const words = new Set<number>()
-    while (words.size < (c.count ?? count)) words.add(((Math.floor(rand() * 2 ** 32) & ~c.mask) | c.value) >>> 0)
+    // A class's own count is for the default 3000 and scales with a larger `count`.
+    const n = Math.round(((c.count ?? 3000) * count) / 3000)
+    while (words.size < n) words.add(((Math.floor(rand() * 2 ** 32) & ~c.mask) | c.value) >>> 0)
     return { group: `class-${c.name}`, words: [...words] }
   })
 }

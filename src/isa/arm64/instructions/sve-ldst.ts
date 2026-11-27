@@ -9,7 +9,7 @@
 import { L, T, type Text } from '../../../core/i18n'
 import type { AliasSpec, InstrSpec } from '../encoding/table'
 import type { Cpu, Fields } from './types'
-import { ESIZE, sx, ux } from './vec'
+import { ESIZE, lanesAt, storeLanes, sx, ux } from './vec'
 import { count, pget, zget, zset } from './zvec'
 
 export const INSTRS: InstrSpec[] = []
@@ -66,6 +66,27 @@ function storeElems(c: Cpu, t: number, es: number, mb: number, pg: boolean[], ad
   })
 }
 
+/**
+ * loadElems and storeElems for consecutive elements from `base`. When the whole block can be read (or, for
+ * a store with every element active, written), no element can fault, so it moves at once; otherwise the
+ * elements go one at a time as above.
+ */
+function loadContig(c: Cpu, t: number, es: number, mb: number, signed: boolean, pg: boolean[], base: bigint, kind: Kind = 'normal'): void {
+  const block = c.loadBlock(base, pg.length * mb)
+  if (!block) return loadElems(c, t, es, mb, signed, pg, (e) => addr(base, BigInt(e * mb)), kind)
+  const vals = lanesAt(block, 0, pg.length, 31 - Math.clz32(mb))
+  for (let e = 0; e < vals.length; e++) vals[e] = !pg[e] ? 0n : signed ? ux(BigInt.asIntN(mb * 8, vals[e]!), es) : vals[e]!
+  zset(c, t, vals, es)
+}
+function storeContig(c: Cpu, t: number, es: number, mb: number, pg: boolean[], base: bigint): void {
+  if (pg.every(Boolean)) {
+    const block = new Uint8Array(pg.length * mb)
+    storeLanes(zget(c, t, es), 31 - Math.clz32(mb), block, 0)
+    if (c.storeBlock(base, block)) return
+  }
+  storeElems(c, t, es, mb, pg, (e) => addr(base, BigInt(e * mb)))
+}
+
 /** Elements of es in one vector. */
 const elemsOf = (c: Cpu, es: number) => count(c, es)
 /** The byte size of what one register of a contiguous access transfers: elements × memory size. */
@@ -117,7 +138,7 @@ const NF_TEXT = T('不触发异常：读不到的元素从那里起清除 FFR �
 DTYPE.forEach((d, dtype) => {
   const dt = dtype.toString(2).padStart(4, '0')
   const mb = 1 << d.msz
-  const contig = (c: Cpu, f: Fields, base: bigint, kind: Kind) => loadElems(c, f.Zt!, d.es, mb, d.signed, pget(c, f.Pg!, d.es), (e) => addr(base, BigInt(e * mb)), kind)
+  const contig = (c: Cpu, f: Fields, base: bigint, kind: Kind) => loadContig(c, f.Zt!, d.es, mb, d.signed, pget(c, f.Pg!, d.es), base, kind)
   const immBase = (c: Cpu, f: Fields) => addr(c.base(f.Rn!), simm(f.imm4!, 4) * span(c, d.es, mb))
   const regBase = (c: Cpu, f: Fields) => addr(c.base(f.Rn!), c.x(f.Rm!) << BigInt(d.msz))
   INSTRS.push(
@@ -180,7 +201,7 @@ for (let msz = 0; msz < 4; msz++) {
     const mb = 1 << msz
     const m = `st1${'bhwd'[msz]}`
     const desc = (how: Text) => T(`把 Zt 活跃元素的低 ${mb * 8} 位存到内存里连续的${BYTES_TEXT[msz]}；地址是 ${how.zh}`, `Store the low ${mb * 8} bits of Zt's active elements to consecutive ${BYTES_EN[msz]}; the address is ${how.en}`)
-    const run = (c: Cpu, f: Fields, base: bigint) => storeElems(c, f.Zt!, es, mb, pget(c, f.Pg!, es), (e) => addr(base, BigInt(e * mb)))
+    const run = (c: Cpu, f: Fields, base: bigint) => storeContig(c, f.Zt!, es, mb, pget(c, f.Pg!, es), base)
     INSTRS.push(
       {
         id: `sve-${m}-${LET[es]}-imm`,
@@ -215,7 +236,7 @@ for (const [sz, msz] of [
   const mb = 1 << msz
   const m = `ld1${'wd'[sz]}`
   const d: Dt = { name: 'wd'[sz]!, msz, es: 4, signed: false }
-  const run = (c: Cpu, f: Fields, base: bigint) => loadElems(c, f.Zt!, 4, mb, false, pget(c, f.Pg!, 4), (e) => addr(base, BigInt(e * mb)))
+  const run = (c: Cpu, f: Fields, base: bigint) => loadContig(c, f.Zt!, 4, mb, false, pget(c, f.Pg!, 4), base)
   INSTRS.push(
     {
       id: `sve-${m}-q-imm`,
@@ -248,8 +269,8 @@ for (let msz = 0; msz < 4; msz++) {
   const b2 = msz.toString(2).padStart(2, '0')
   const L_ = LET[msz]!
   const hint = T('（不常用的数据：提示缓存不必保留）', ' (non-temporal: a hint that the data need not stay in the caches)')
-  const ld = (c: Cpu, f: Fields, base: bigint) => loadElems(c, f.Zt!, msz, mb, false, pget(c, f.Pg!, msz), (e) => addr(base, BigInt(e * mb)))
-  const st = (c: Cpu, f: Fields, base: bigint) => storeElems(c, f.Zt!, msz, mb, pget(c, f.Pg!, msz), (e) => addr(base, BigInt(e * mb)))
+  const ld = (c: Cpu, f: Fields, base: bigint) => loadContig(c, f.Zt!, msz, mb, false, pget(c, f.Pg!, msz), base)
+  const st = (c: Cpu, f: Fields, base: bigint) => storeContig(c, f.Zt!, msz, mb, pget(c, f.Pg!, msz), base)
   INSTRS.push(
     {
       id: `sve-ldnt1${'bhwd'[msz]}-imm`,

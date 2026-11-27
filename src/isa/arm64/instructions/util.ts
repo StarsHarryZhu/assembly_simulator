@@ -12,24 +12,56 @@ export const signed = (sf: number, v: bigint) => (sf ? BigInt.asIntN(64, v) : Bi
 /** Sign-extend a field value of `bits` bits to a JS number. */
 export const sext = (v: number, bits: number) => (bits >= 32 ? v | 0 : (v << (32 - bits)) >> (32 - bits))
 
-/** x + y + carry at a width, with the N Z C V flags it sets. */
-export function addWithCarry(sf: number, x: bigint, y: bigint, carry: number): [bigint, number] {
-  const bits = sf ? 64 : 32
-  const m = sf ? M64 : M32
-  const usum = x + y + BigInt(carry)
-  const result = usum & m
-  const ssum = BigInt.asIntN(bits, x) + BigInt.asIntN(bits, y) + BigInt(carry)
-  const n = Number(result >> BigInt(bits - 1)) & 1
-  const z = result === 0n ? 1 : 0
-  const c = usum === result ? 0 : 1
-  const v = BigInt.asIntN(bits, result) === ssum ? 0 : 1
-  return [result, (n << 3) | (z << 2) | (c << 1) | v]
+/**
+ * The N Z C V flags (bits 3..0) of the last addWithCarry or subWithBorrow. Returning them in a tuple would
+ * cost an allocation per instruction; read this right after the call instead.
+ */
+export let nzcvOut = 0
+
+/*
+ * The arithmetic below stays within the register width (BigInt.asUintN/asIntN, unsigned compares, sign bits),
+ * which V8 compiles to machine integer operations instead of allocating a bigint for every intermediate value.
+ * x and y are unsigned values of the width.
+ */
+
+/** x + y + carry at a width (Arm's AddWithCarry); the flags go to nzcvOut. */
+export function addWithCarry(sf: number, x: bigint, y: bigint, carry: number): bigint {
+  if (sf) {
+    const r = BigInt.asUintN(64, x + y + (carry ? 1n : 0n))
+    // The sum wrapped past 2^64 exactly when it came out below x (or equal to it, adding a carry).
+    const c = carry ? r <= x : r < x
+    // Signed overflow: x and y have the same sign and the result the other one.
+    nzcvOut = (BigInt.asIntN(64, r) < 0n ? 8 : 0) | (r === 0n ? 4 : 0) | (c ? 2 : 0) | (BigInt.asIntN(64, (x ^ r) & (y ^ r)) < 0n ? 1 : 0)
+    return r
+  }
+  const r = BigInt.asUintN(32, x + y + (carry ? 1n : 0n))
+  const c = carry ? r <= x : r < x
+  nzcvOut = (r >= 0x8000_0000n ? 8 : 0) | (r === 0n ? 4 : 0) | (c ? 2 : 0) | (BigInt.asIntN(32, (x ^ r) & (y ^ r)) < 0n ? 1 : 0)
+  return r
 }
 
-/** N and Z of a logical result (C and V cleared). */
+/**
+ * x − y − (1 − carry) at a width: AddWithCarry(x, NOT y, carry), as SUB, SUBS, SBC and CMP compute it. The
+ * carry out is "no borrow": x ≥ y with a carry in, x > y without.
+ */
+export function subWithBorrow(sf: number, x: bigint, y: bigint, carry: number): bigint {
+  if (sf) {
+    const r = BigInt.asUintN(64, x - y - (carry ? 0n : 1n))
+    const c = carry ? x >= y : x > y
+    // Signed overflow: x and y have different signs and the result has y's.
+    nzcvOut = (BigInt.asIntN(64, r) < 0n ? 8 : 0) | (r === 0n ? 4 : 0) | (c ? 2 : 0) | (BigInt.asIntN(64, (x ^ y) & (x ^ r)) < 0n ? 1 : 0)
+    return r
+  }
+  const r = BigInt.asUintN(32, x - y - (carry ? 0n : 1n))
+  const c = carry ? x >= y : x > y
+  nzcvOut = (r >= 0x8000_0000n ? 8 : 0) | (r === 0n ? 4 : 0) | (c ? 2 : 0) | (BigInt.asIntN(32, (x ^ y) & (x ^ r)) < 0n ? 1 : 0)
+  return r
+}
+
+/** N and Z of a logical result of the width (C and V cleared). */
 export function logicFlags(sf: number, result: bigint): number {
-  const n = Number(result >> BigInt(sf ? 63 : 31)) & 1
-  return (n << 3) | (result === 0n ? 4 : 0)
+  const n = sf ? BigInt.asIntN(64, result) < 0n : result >= 0x8000_0000n
+  return (n ? 8 : 0) | (result === 0n ? 4 : 0)
 }
 
 /** Shift a register value: 0 LSL, 1 LSR, 2 ASR, 3 ROR. */

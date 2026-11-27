@@ -81,6 +81,41 @@ export class OperandStream {
       throw e
     }
   }
+  /** Whether a shift or extend amount follows: `#`, or a bare number. */
+  hasAmount(): boolean {
+    return this.isPunct('#') || this.peek()?.kind === 'num'
+  }
+  /**
+   * Consume the `#` of the amount after a shift or extend keyword (lsl, uxtw, msl…). As in GNU-mode
+   * assemblers, the amount is `#` followed by a number, a name or `(`, or else a bare number.
+   */
+  amountHash(): void {
+    const at = this.pos
+    if (this.eat('#')) {
+      const t = this.peek()
+      if (t && (t.kind === 'num' || t.kind === 'ident' || (t.kind === 'punct' && t.text === '('))) return
+      this.fail(L('# 后面的移位量要以数、名字或括号开头', 'After #, a shift amount starts with a number, a name or a parenthesis'), true)
+    }
+    if (this.peek()?.kind !== 'num') this.fail(L('移位量前面要写 #', 'Write # before the shift amount'), true, at)
+  }
+  /** Consume an optional `#` where a value without it must be a plain number (barrier and prefetch options). */
+  numberHash(): void {
+    if (!this.eat('#') && this.peek()?.kind !== 'num') this.fail(L('这里的值前面要写 #', 'Write # before this value'), true)
+  }
+  /** Whether the immediate that starts at token `at` was written with `#` or as a plain number (needed before `, lsl`). */
+  plainStart(at: number): boolean {
+    const prev = this.toks[at - 1]
+    return (prev?.kind === 'punct' && prev.text === '#') || this.toks[at]?.kind === 'num'
+  }
+  /** A shift amount written as one number, `#12` or `12`, as ADD/SUB and SVE immediates take it. */
+  plainAmount(): bigint {
+    const prev = this.toks[this.pos - 1]
+    if (!(prev?.kind === 'punct' && prev.text === '#')) this.amountHash()
+    const t = this.peek()
+    if (t?.kind !== 'num') this.fail(L('这里的移位量只能直接写一个数', 'This shift amount must be a plain number'), true)
+    this.pos++
+    return t.value!
+  }
   /** Whether an expression can start here (so a register or keyword is not mistaken for one). */
   startsValue(): boolean {
     const t = this.peek()
@@ -221,6 +256,8 @@ function describe(it: Item): string {
   return ''
 }
 
+const AMOUNT_WORDS = new Set(['lsl', 'lsr', 'asr', 'ror', 'msl', 'uxtb', 'uxth', 'uxtw', 'uxtx', 'sxtb', 'sxth', 'sxtw', 'sxtx'])
+
 /**
  * Match tokens against a template, filling `f`. Throws the deepest Mismatch seen (or `best` keeps it) when
  * they do not fit. Optional groups are tried greedily.
@@ -230,6 +267,15 @@ export function matchSyntax(items: Item[], s: OperandStream, f: Fields, spans: S
   const note = (m: Mismatch) => {
     const b = best.m
     if (!b || m.pos > b.pos || (m.pos === b.pos && m.hard && !b.hard)) best.m = m
+  }
+  // An immediate's `#` is optional, except after a shift or extend keyword (a number must follow) and
+  // after SVE's `mul` (the `#` must be there).
+  const hash = () => {
+    const prev = s.toks[s.pos - 1]
+    const w = prev?.kind === 'ident' ? prev.text.toLowerCase() : ''
+    if (AMOUNT_WORDS.has(w)) s.amountHash()
+    else if (w === 'mul' && !s.isPunct('#')) s.fail(L('mul 后面要写 #', 'Write # after mul'), true)
+    else s.eat('#')
   }
   const run = (list: Item[]): void => {
     for (const it of list) {
@@ -255,11 +301,11 @@ export function matchSyntax(items: Item[], s: OperandStream, f: Fields, spans: S
         continue
       }
       if (it.k === 'hash') {
-        s.eat('#')
+        hash()
         continue
       }
       if (it.k === 'num') {
-        s.eat('#')
+        hash()
         const at = s.pos
         if (!s.startsValue()) s.fail(L(`这里应该是 #${it.value}`, `Expected #${it.value}`))
         const v = s.expr()

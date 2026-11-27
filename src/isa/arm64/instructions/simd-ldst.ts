@@ -8,7 +8,7 @@ import { L, T, type Text } from '../../../core/i18n'
 import type { AliasSpec, InstrSpec } from '../encoding/table'
 import type { Cpu, Fields } from './types'
 import { M64, sext } from './util'
-import { elems, toBytes } from './vec'
+import { elems, lanesAt, storeLanes, toBytes } from './vec'
 
 const bin = (v: number, n: number) => v.toString(2).padStart(n, '0')
 const INSTRS_: InstrSpec[] = []
@@ -216,27 +216,43 @@ function multiple(c: Cpu, f: Fields, load: boolean, regs: number, selem: number)
   const bytes = f.Q ? 16 : 8
   const per = bytes / eb
   const addr = c.base(f.Rn!)
-  const reps = regs / selem
-  let off = 0
-  if (load) {
-    const out = Array.from({ length: regs }, () => Array<bigint>(per).fill(0n))
-    for (let r = 0; r < reps; r++)
-      for (let e = 0; e < per; e++)
-        for (let s = 0; s < selem; s++) {
-          out[r * selem + s]![e] = c.load((addr + BigInt(off)) & M64, eb)
-          off += eb
-        }
-    out.forEach((vals, i) => c.vwrite((f.Rt! + i) % 32, toBytes(vals, es)))
-  } else {
-    const src = Array.from({ length: regs }, (_, i) => elems(c.vread((f.Rt! + i) % 32, bytes), es))
-    for (let r = 0; r < reps; r++)
-      for (let e = 0; e < per; e++)
-        for (let s = 0; s < selem; s++) {
-          c.store((addr + BigInt(off)) & M64, eb, src[r * selem + s]![e]!)
-          off += eb
-        }
+  const total = regs * bytes
+  // Memory holds structure after structure; `regBytes` holds register after register (bytes each). The
+  // element at memory offset ((r * per + e) * selem + s) * eb is element e of register r * selem + s.
+  const at = (off: number) => {
+    const k = off / eb
+    const s = k % selem
+    const e = Math.floor(k / selem) % per
+    const r = Math.floor(k / (selem * per))
+    return (r * selem + s) * bytes + e * eb
   }
-  return off
+  if (load) {
+    // When the whole block can be read, read it at once; otherwise element by element, so a fault names the
+    // first element that cannot be read (and no register changes).
+    let block = c.loadBlock(addr, total)
+    if (!block) {
+      block = new Uint8Array(total)
+      for (let off = 0; off < total; off += eb) storeLanes([c.load((addr + BigInt(off)) & M64, eb)], es, block, off)
+    }
+    let regBytes = block
+    if (selem > 1) {
+      regBytes = new Uint8Array(total)
+      for (let off = 0; off < total; off += eb) regBytes.set(block.subarray(off, off + eb), at(off))
+    }
+    for (let i = 0; i < regs; i++) c.vwrite((f.Rt! + i) % 32, regBytes.subarray(i * bytes, i * bytes + bytes))
+  } else {
+    const regBytes = new Uint8Array(total)
+    for (let i = 0; i < regs; i++) regBytes.set(c.vread((f.Rt! + i) % 32, bytes), i * bytes)
+    let block = regBytes
+    if (selem > 1) {
+      block = new Uint8Array(total)
+      for (let off = 0; off < total; off += eb) block.set(regBytes.subarray(at(off), at(off) + eb), off)
+    }
+    // Element by element when part of the block cannot be written: the elements before the fault are stored.
+    if (!c.storeBlock(addr, block))
+      for (let off = 0; off < total; off += eb) c.store((addr + BigInt(off)) & M64, eb, lanesAt(block, off, 1, es)[0]!)
+  }
+  return total
 }
 
 const MULTI: [number, number, number][] = [

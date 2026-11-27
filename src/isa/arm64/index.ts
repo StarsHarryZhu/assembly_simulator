@@ -146,6 +146,7 @@ export const arm64: IsaPlugin = {
       { word: '0xd503201f', note: 'nop' },
     ],
     push: 'stp x29, x30, [sp, #-16]!',
+    search: ['lsl', '.quad'],
   },
   zeroRegister: undefined,
   assemble: (source: SourceFile, options) => assemble(source, options),

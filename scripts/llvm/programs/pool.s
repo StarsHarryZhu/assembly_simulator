@@ -23,3 +23,14 @@ start:
     ldr x15, =0xabcdef
     ldr w16, =0xfedc
     ret
+// Constants for W registers, and entries shared across .ltorg.
+    ldr w17, =-65536
+    ldr w18, =-2147483648
+    ldr x19, =0xabcdef
+    ldr w20, =0xabcdef
+    ldr x21, =0x5555555555555555
+    .ltorg
+    ldr x22, =0xabcdef
+    ldr x23, =0x77777777777
+    ldr x24, =0x77777777777
+    ret

@@ -20,6 +20,8 @@ const OUT_OF_SCOPE = new Set([
   'ldclrp', 'ldclrpa', 'ldclrpal', 'ldclrpl', 'ldsetp', 'ldsetpa', 'ldsetpal', 'ldsetpl', 'swpp', 'swppa', 'swppal', 'swppl',
   'mrrs', 'msrr', 'sysp', 'tlbip',
   'dcps1', 'dcps2', 'dcps3', 'drps', 'trcit', 'brb', 'tsb', 'stshh',
+  // FEAT_TCHANGE and FEAT_TLBID's permission lookaside invalidation (2024–25 extensions).
+  'tchangef', 'tchangeb', 'plbi',
   // Armv8-R; RME.
   'dfb', 'apas',
   // FEAT_CMPBR (compare and branch, Armv9.6).
@@ -39,7 +41,44 @@ const OTHER = /^(rcw|rprfm)/
  * Outside the plan in the SIMD&FP space: FP8 (FEAT_FP8, FP8DOT2/4, FP8FMA), FEAT_LUT, FEAT_FAMINMAX,
  * FEAT_LSFE (floating-point atomics), FEAT_LRCPC3 for SIMD&FP registers, and MTE's tag-setting SETG*.
  */
-const SIMD_OTHER = /^(f1cvtl2?|f2cvtl2?|bf1cvtl2?|bf2cvtl2?|fcvtn2?|fscale|fdot|fmlal[bt]|fmlall[bt][bt]|luti[24]|famax|famin|ld(b)?f(add|max|min|maxnm|minnm)(a|l|al)?|st(b)?f(add|max|min|maxnm|minnm)l?|swp(b)?f|ldapur|stlur|ldap1|stl1|setg(p|m|e)n?t?)$/
+const SIMD_OTHER = /^(f1cvtl2?|f2cvtl2?|bf1cvtl2?|bf2cvtl2?|fcvtn2?|fscale|fdot|fmlal[bt]|fmlall[bt][bt]|luti[24]|famax|famin|ld(b)?f(add|max|min|maxnm|minnm)(a|l|al)?|st(b)?f(add|max|min|maxnm|minnm)l?|swp(b)?f|ldapur|stlur|ldap1|stl1|setg(p|m|e)t?n?)$/
+/**
+ * Outside the plan among the scalar FP and Neon forms: FEAT_FPRCVT (Armv9.6: FCVT*, SCVTF and UCVTF between
+ * SIMD&FP registers of different sizes, such as fcvtms s0, h1) and the FP8 matrix multiplies (Neon FMMLA,
+ * which only exists with byte sources), and FEAT_LRCPC3's post-index LDAPR.
+ */
+function fpOther(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, ' ')
+  const cvt = /^(fcvt[amnpz][su]|[su]cvtf) ([hsd])\d+, ([hsd])\d+$/.exec(t)
+  return (!!cvt && cvt[2] !== cvt[3]) || /^fmmla v/.test(t) || /^ldapr [wx]\d+, \[\w+\], #/.test(t)
+}
+
+/**
+ * MOPS with XZR as the size register: like overlapping registers this is CONSTRAINED UNPREDICTABLE (UNDEF or
+ * NOP); we choose UNDEFINED for all of them and so decode no instruction, where LLVM decodes this one.
+ */
+export function mopsSizeZr(text: string): boolean {
+  return /^(cpy|set)\w*\s.*\bxzr!/i.test(text.trim())
+}
+
+/**
+ * Two spellings of one instruction: our BFC (the architecture's preferred alias, as GNU objdump prints it)
+ * is LLVM's BFI from XZR/WZR, LLVM prints bitmask MOV immediates signed where we print them unsigned, and
+ * LLVM prints BTI without targets as "bti r".
+ */
+export function sameAlias(ours: string, llvm: string): boolean {
+  const o = normalizeAsm(ours)
+  const l = normalizeAsm(llvm)
+  if (o === 'bti' && l === 'bti r') return true
+  const bfc = /^bfc ([wx])(\w+), (#\d+, #\d+)$/.exec(o)
+  if (bfc && l === `bfi ${bfc[1]}${bfc[2]}, ${bfc[1]}zr, ${bfc[3]}`) return true
+  const mo = /^mov (w|x|wsp|sp)(\w*), #(-?\d+)$/.exec(o)
+  const ml = /^mov (w|x|wsp|sp)(\w*), #(-?\d+)$/.exec(l)
+  if (!mo || !ml || mo[1] !== ml[1] || mo[2] !== ml[2]) return false
+  const bits = mo[1] === 'w' || mo[1] === 'wsp' ? 32 : 64
+  return BigInt.asUintN(bits, BigInt(mo[3]!)) === BigInt.asUintN(bits, BigInt(ml[3]!))
+}
+
 /** Operations of the SYS family from features outside the plan: MTE tags, PoPS, OCCMO, MEC, RME, ATS1A, TLBIW. */
 const SYS_OTHER = /^(dc (i?gd?(vac|sw)|c(i)?gd?(vac|sw|vap|vadp)|gva|gzva|z?gbva|civaps|cigdvaps|c(i)?(gd)?vaoc|ci(gd)?pae|ci(gd)?papa)|at s1e[123]a|tlbi (vmallws2e1|paall|rpal?os))/
 
@@ -93,7 +132,7 @@ function smeOther(text: string): boolean {
 
 export function outOfScope(text: string): boolean {
   const m = text.trim().split(/\s+/)[0]!.toLowerCase()
-  return OUT_OF_SCOPE.has(m) || LSUI.test(m) || OTHER.test(m) || (SIMD_OTHER.test(m) && !IN_SCOPE_FORMS(text)) || SYS_OTHER.test(text.trim().toLowerCase().replace(/\s+/g, ' ')) || sveOther(text) || smeOther(text)
+  return OUT_OF_SCOPE.has(m) || LSUI.test(m) || OTHER.test(m) || (SIMD_OTHER.test(m) && !IN_SCOPE_FORMS(text)) || SYS_OTHER.test(text.trim().toLowerCase().replace(/\s+/g, ' ')) || sveOther(text) || smeOther(text) || fpOther(text)
 }
 
 /** A system register LLVM names but we print generically (we name only the registers we implement). */

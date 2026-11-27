@@ -100,7 +100,8 @@ export interface Val {
 }
 
 const B = BigInt
-const ones = (n: number) => (1n << B(n)) - 1n
+const ONES = Array.from({ length: 129 }, (_, n) => (1n << B(n)) - 1n)
+const ones = (n: number) => ONES[n] ?? (1n << B(n)) - 1n
 
 export function bitLength(m: bigint): number {
   let n = 0
@@ -349,10 +350,160 @@ export function fpAbs(env: FpEnv, fmt: Fmt, op: bigint): bigint {
   return env.altfp && isNaN_(fmt, op) ? op : op & ~signBit(fmt)
 }
 
+/* ------------------------------------------------------------------ native fast path */
+
+/**
+ * Single and double precision add, multiply and (single) multiply-add on JS numbers, used only where the
+ * result is provably the one the exact path gives: round to nearest, every operand normal or zero, and a
+ * finite result at least twice the smallest normal (so no operand or result is ever flushed, tiny or NaN,
+ * which is all FZ, FIZ, AH and DN act on). Inexactness comes from error-free transformations (TwoSum,
+ * Dekker's TwoProduct); a single-precision result whose double sum sits exactly halfway between two singles
+ * with a nonzero error (where rounding twice could differ) goes to the exact path. `fast.on` lets the
+ * tests compare both paths.
+ */
+export const fast = { on: true }
+const SCR = new DataView(new ArrayBuffer(8))
+const MIN32 = 2 ** -125
+const MIN64 = 2 ** -1021
+
+/** A scratch cell: a bigint stored here reads back as numbers (Number() of a bigint is a slow runtime call). */
+const SC64 = new BigUint64Array(1)
+const SC32 = new Uint32Array(SC64.buffer)
+const SCF = new Float32Array(SC64.buffer)
+
+/** A single's value, or null unless it is normal or zero. */
+function num32(bits: bigint): number | null {
+  SC64[0] = bits
+  const b = SC32[0]!
+  const ex = (b >>> 23) & 0xff
+  if (ex === 0xff || (ex === 0 && (b & 0x7fffff) !== 0)) return null
+  return SCF[0]!
+}
+const bits32 = (v: number): bigint => {
+  SCR.setFloat32(0, v)
+  return B(SCR.getUint32(0))
+}
+/** A double's value, or null unless it is normal or zero (and, with `lim`, within 2^±lim). */
+function num64(bits: bigint, lim = 1100): number | null {
+  SCR.setBigUint64(0, bits)
+  const hi = SCR.getUint32(0)
+  const ex = (hi >>> 20) & 0x7ff
+  if (ex === 0x7ff) return null
+  if (ex === 0) return (hi & 0xfffff) === 0 && SCR.getUint32(4) === 0 ? SCR.getFloat64(0) : null
+  if (Math.abs(ex - 1023) > lim) return null
+  return SCR.getFloat64(0)
+}
+const bits64 = (v: number): bigint => {
+  SCR.setFloat64(0, v)
+  return SCR.getBigUint64(0)
+}
+
+/** The exact error of the double sum s = a + b (TwoSum). */
+function sumError(a: number, b: number, s: number): number {
+  const bb = s - a
+  return a - (s - bb) + (b - bb)
+}
+
+/**
+ * The exact value s + e (|e| at most half an ulp of the double s) rounded to single precision, nearest
+ * even; null when that needs the exact path (a tiny or infinite result, or s a tie that e breaks).
+ */
+function near32(env: FpEnv, s: number, e: number, fpexc: boolean): bigint | null {
+  const r = Math.fround(s)
+  if (!Number.isFinite(r)) return null
+  if (!(Math.abs(r) >= MIN32) && !(s === 0 && e === 0)) return null
+  if (e !== 0 && r !== s) {
+    // The single on the other side of s: if s lies halfway between it and r, e decides the rounding.
+    SCR.setFloat32(0, r)
+    const u = SCR.getUint32(0)
+    SCR.setUint32(0, (s > r) === r > 0 ? u + 1 : u - 1)
+    if ((r + SCR.getFloat32(0)) / 2 === s) return null
+  }
+  if (fpexc && (e !== 0 || r !== s)) env.flags |= IXC
+  return bits32(r)
+}
+
+/** A double result r with exact error e, or null when it is tiny or infinite. */
+function near64(env: FpEnv, r: number, e: number, fpexc: boolean): bigint | null {
+  if (!Number.isFinite(r)) return null
+  if (!(Math.abs(r) >= MIN64) && !(r === 0 && e === 0)) return null
+  if (fpexc && e !== 0) env.flags |= IXC
+  return bits64(r)
+}
+
+function fastAdd(env: FpEnv, fmt: Fmt, op1: bigint, op2: bigint, negate2: boolean, fpexc: boolean): bigint | null {
+  const single = fmt === F32
+  const a = single ? num32(op1) : num64(op1)
+  let b = single ? num32(op2) : num64(op2)
+  if (a === null || b === null) return null
+  if (negate2) b = -b
+  const s = a + b
+  const e = sumError(a, b, s)
+  return single ? near32(env, s, e, fpexc) : near64(env, s, e, fpexc)
+}
+
+/** Dekker's split of a double into two halves of at most 26 bits. */
+function split26(a: number): [number, number] {
+  const c = 134217729 * a
+  const hi = c - (c - a)
+  return [hi, a - hi]
+}
+
+function fastMul(env: FpEnv, fmt: Fmt, op1: bigint, op2: bigint, fpexc: boolean): bigint | null {
+  if (fmt === F32) {
+    const a = num32(op1)
+    const b = num32(op2)
+    if (a === null || b === null) return null
+    // Two 24-bit significands: the double product is exact.
+    return near32(env, a * b, 0, fpexc)
+  }
+  // Exponents within ±500 keep the split and the error term clear of overflow and underflow.
+  const a = num64(op1, 500)
+  const b = num64(op2, 500)
+  if (a === null || b === null) return null
+  const p = a * b
+  if (p === 0) return near64(env, p, 0, fpexc)
+  if (!(Math.abs(p) >= 2 ** -900)) return null
+  const [ah, al] = split26(a)
+  const [bh, bl] = split26(b)
+  const e = ah * bh - p + ah * bl + al * bh + al * bl
+  return near64(env, p, e, fpexc)
+}
+
+function fastMulAdd32(env: FpEnv, addend: bigint, op1: bigint, op2: bigint, fpexc: boolean): bigint | null {
+  const c = num32(addend)
+  const a = num32(op1)
+  const b = num32(op2)
+  if (a === null || b === null || c === null) return null
+  return fma32Values(env, c, a, b, fpexc)
+}
+
+/** Whether the native paths apply in an environment (round to nearest; `fast.on`). */
+export const nativeOk = (env: FpEnv) => fast.on && env.rmode === RN
+
+/** A single's value for fma32Values, or null unless it is normal or zero. */
+export const value32 = (bits: bigint): number | null => num32(bits)
+
+/**
+ * Single-precision c + a × b on the native path, from operand values that value32 gave (callers that
+ * convert each operand once, as an outer product does, check nativeOk first): the result's bits, or null
+ * when the exact path must decide (fpMulAdd then gives the same as it always does).
+ */
+export function fma32Values(env: FpEnv, c: number, a: number, b: number, fpexc = true): bigint | null {
+  // Two 24-bit significands: the double product is exact.
+  const p = a * b
+  const s = c + p
+  return near32(env, s, sumError(c, p, s), fpexc)
+}
+
 /* ------------------------------------------------------------------ arithmetic */
 
 export function fpAdd(env: FpEnv, fmt: Fmt, op1: bigint, op2: bigint, negate2 = false, fpexc = true): bigint {
   const rounding = env.rmode
+  if (fast.on && rounding === RN && (fmt === F32 || fmt === F64)) {
+    const r = fastAdd(env, fmt, op1, op2, negate2, fpexc)
+    if (r !== null) return r
+  }
   const a = unpack(env, fmt, op1, fpexc)
   let b = unpack(env, fmt, op2, fpexc)
   const nan = processNaNs(env, fmt, a, b, op1, op2, fpexc)
@@ -378,6 +529,10 @@ export function fpSub(env: FpEnv, fmt: Fmt, op1: bigint, op2: bigint, fpexc = tr
 }
 
 export function fpMul(env: FpEnv, fmt: Fmt, op1: bigint, op2: bigint, fpexc = true): bigint {
+  if (fast.on && env.rmode === RN && (fmt === F32 || fmt === F64)) {
+    const r = fastMul(env, fmt, op1, op2, fpexc)
+    if (r !== null) return r
+  }
   const a = unpack(env, fmt, op1, fpexc)
   const b = unpack(env, fmt, op2, fpexc)
   const nan = processNaNs(env, fmt, a, b, op1, op2, fpexc)
@@ -432,7 +587,8 @@ export function fpDiv(env: FpEnv, fmt: Fmt, op1: bigint, op2: bigint): bigint {
     const sticky = num % b.m !== 0n ? 1n : 0n
     r = round(env, fmt, s, (q << 1n) | sticky, a.x - b.x - k - 1)
   }
-  denorms(env, fmt, a, b)
+  // A division by zero never reports a denormal dividend.
+  if (b.t !== ZERO) denorms(env, fmt, a, b)
   return r
 }
 
@@ -462,6 +618,8 @@ export function fpSqrt(env: FpEnv, fmt: Fmt, op: bigint): bigint {
     r = defaultNaN(fmt, env)
     env.flags |= IOC
   } else {
+    // Only a positive denormal reaches FPProcessDenorm: a negative one is just an invalid operation.
+    denorms(env, fmt, a)
     // m × 2^x with x even and m wide enough for the result bits plus a sticky bit.
     let m = a.m
     let x = a.x
@@ -474,13 +632,16 @@ export function fpSqrt(env: FpEnv, fmt: Fmt, op: bigint): bigint {
     const sticky = root * root !== m ? 1n : 0n
     r = round(env, fmt, 0, (root << 1n) | sticky, x / 2 - 1)
   }
-  denorms(env, fmt, a)
   return r
 }
 
 /** FPMulAdd: addend + op1 × op2, rounded once. */
 export function fpMulAdd(env: FpEnv, fmt: Fmt, addend: bigint, op1: bigint, op2: bigint, fpexc = true): bigint {
   const rounding = env.rmode
+  if (fast.on && rounding === RN && fmt === F32) {
+    const r = fastMulAdd32(env, addend, op1, op2, fpexc)
+    if (r !== null) return r
+  }
   const A = unpack(env, fmt, addend, fpexc)
   const a = unpack(env, fmt, op1, fpexc)
   const b = unpack(env, fmt, op2, fpexc)

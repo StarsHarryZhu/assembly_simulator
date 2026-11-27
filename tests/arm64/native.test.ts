@@ -22,7 +22,8 @@ type SveRow = [...Row, number?, Record<string, string>?, (string | null)?]
 /** Memory changes: `[offset, byte]`, or in SME fixtures `[offset, hex]` runs. */
 type Change = [number, number | string]
 
-const DIR = join(__dirname, 'golden', 'native')
+/** NATIVE_DIR replays a deeper run made elsewhere (see scripts/native-golden.mjs). */
+const DIR = process.env.NATIVE_DIR ?? join(__dirname, 'golden', 'native')
 /** As in scripts/native/harness.c: how far from the buffer a pointer is still shown as an offset. */
 const NEAR = 0x10000n
 

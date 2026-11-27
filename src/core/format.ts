@@ -46,11 +46,20 @@ export function vaOf(addr: number): bigint {
   return addr >= TWO48 ? TOP_HALF + BigInt(addr - TWO48) : BigInt(addr)
 }
 
-/** The address number for a 64-bit virtual address, or null between the two halves. */
+/** A scratch cell: storing a bigint keeps it modulo 2^64, and the halves read back as numbers. */
+const VA64 = new BigUint64Array(1)
+const VA32 = new Uint32Array(VA64.buffer)
+
+/**
+ * The address number for a 64-bit virtual address, or null between the two halves. Every load and store
+ * calls this, so it avoids BigInt arithmetic and Number(), a slow runtime call.
+ */
 export function addrOf(va: bigint): number | null {
-  va = BigInt.asUintN(64, va)
-  if (va < 1n << 48n) return Number(va)
-  if (va >= TOP_HALF) return Number(va - TOP_HALF) + TWO48
+  VA64[0] = va
+  const hi = VA32[1]!
+  const lo = VA32[0]!
+  if (hi < 0x10000) return hi * 0x1_0000_0000 + lo
+  if (hi >= 0xffff0000) return (hi - 0xffff0000) * 0x1_0000_0000 + lo + TWO48
   return null
 }
 

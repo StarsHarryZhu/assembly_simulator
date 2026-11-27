@@ -268,3 +268,68 @@ strb w2, [x2, #1]!
 ldr x2, [x2, x3]
 stlxr w1, w1, [x2]
 stxp w3, x1, x2, [x3]
+// Operand spellings: after a shift or extend keyword, `#` with any expression or a plain number; ADD/SUB
+// and SVE shifted immediates take one number and need `#` or a number before an immediate; SVE `mul #`;
+// expressions as lane indexes; `#` in ZA offsets; hex FP immediates as their encoding; forms of zero.
+add x0, x1, x2, lsl 3
+add x0, x1, x2, lsl #1+2
+add x0, x1, x2, lsl #(3)
+add x0, x1, x2, lsl (3)
+add x0, x1, x2, lsl #-0
+add x0, x1, x2, lsl #+3
+add x0, x1, #1, lsl 12
+add x0, x1, #1, lsl #(12)
+add x0, x1, #1, lsl #6+6
+sub x22, x21, #(182 + 0), lsl #12
+sub x22, x21, (182 + 0), lsl #12
+sub x22, x21, -182, lsl #12
+movz x0, #1, lsl #8+8
+movz x0, #1, lsl (16)
+ldr x0, [x1, x2, lsl (3)]
+ldr x0, [x1, w2, sxtw #(3)]
+ldrsb x1, [x18, x15, lsl #(0 | 0)]
+ldrsb x1, [x18, w15, uxtw #(0)]
+movi v0.4s, #1, msl #4+4
+movi v0.4s, #1, msl (8)
+add z0.s, z0.s, #1, lsl 8
+add z0.s, z0.s, #1, lsl #(8)
+dup z0.s, (1), lsl #8
+ld1d {z0.d}, p0/z, [x0, z1.d, lsl (3)]
+cntw x27, #0x17, mul 2
+cntw x27, #0x17, mul #(2)
+incw z8.s, vl5, mul (7)
+dsb (3)
+dsb -0
+dsb #(3)
+prfm (6|0), [x0]
+prfm #(6|0), [x0]
+prfm 6, [x0]
+prfb (6), p4, [x25]
+prfb #(6), p4, [x25]
+mov v0.s[1+0], w0
+mov v0.s[(1)], w0
+mov v0.s[#1], w0
+ld1 {v0.s}[1+0], [x0]
+fmla v0.4s, v1.4s, v2.s[1|0]
+fmov x19, v16.d[1 + 0]
+mov za0h.s[w12, #1], p0/m, z0.s
+fmla za.s[w8, #0, vgx2], {z0.s, z1.s}, z2.s[1]
+fmov d0, #0x70
+fmov d0, #0x0
+fmov d0, #0x100
+fmov d0, #0X70
+fmov v0.2d, #0x0
+fmov z0.s, #0x70
+fmov z0.s, #0x0
+fmov d0, #+1.0
+fmov d0, #-0.0
+fmov d0, #0
+fcmp d0, #0.0
+fcmp d0, #0
+fcmeq v0.4s, v1.4s, #+0.0
+fcmeq v0.4s, v1.4s, #0x0
+fcmeq v0.4s, v1.4s, #-0.0
+fcmle p2.d, p2/z, z30.d, #0.0
+fcmle p2.d, p2/z, z30.d, #+0.0
+fadd z0.s, p0/m, z0.s, #+0.5
+fmax z0.s, p0/m, z0.s, #-0.0

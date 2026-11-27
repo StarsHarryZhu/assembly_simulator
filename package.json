@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.5",
   "type": "module",
-  "description": "Browser-based assembly IDE and simulator: MIPS32 with the full MARS 4.5 instruction set.",
+  "description": "Browser-based assembly IDE and simulator: MIPS32 with the full MARS 4.5 instruction set, and ARMv9-A AArch64 with SVE2 and SME2.",
   "license": "MIT",
   "scripts": {
     "dev": "vite",

@@ -71,6 +71,7 @@ function readIndexReg(s: OperandStream, f: Fields, base: number): void {
 
 /** An offset `o` or a range `o:o+n−1` (n > 1), with o a multiple of n below n × 2^bits. */
 function readOffset(s: OperandStream, n: number, bits: number): number {
+  s.eat('#')
   const at = s.pos
   if (!s.startsValue()) s.fail(L('这里应该是偏移', 'Expected an offset'))
   const first = Number(s.expr())

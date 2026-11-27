@@ -157,6 +157,25 @@ export const INSTRS: InstrSpec[] = [
     desc: T('提示指令：没有特定含义的编号什么也不做', 'Hint: numbers without a defined meaning do nothing'),
     exec: nothing,
   },
+  // FEAT_WFxT (mandatory from Armv8.7): wait with a timeout; like WFE and WFI they may return at once.
+  {
+    id: 'wfet',
+    mnemonic: 'wfet',
+    group: 'system',
+    bits: '11010101000000110001000000 0 Rt:5',
+    syntax: '<Xt>',
+    desc: T('等待事件，最多等到计数器 CNTVCT 达到 Xt（这里不等待，直接继续）', 'Wait for event, at most until the counter CNTVCT reaches Xt (continues at once here)'),
+    exec: nothing,
+  },
+  {
+    id: 'wfit',
+    mnemonic: 'wfit',
+    group: 'system',
+    bits: '11010101000000110001000000 1 Rt:5',
+    syntax: '<Xt>',
+    desc: T('等待中断，最多等到计数器 CNTVCT 达到 Xt（这里不等待，直接继续）', 'Wait for interrupt, at most until the counter CNTVCT reaches Xt (continues at once here)'),
+    exec: nothing,
+  },
   {
     id: 'clrex',
     mnemonic: 'clrex',
@@ -224,11 +243,12 @@ export const INSTRS: InstrSpec[] = [
     exec: (c, f) => c.pstate(f.op1!, f.op2!, f.CRm!),
   },
   {
+    // CRm is (0) in CFINV, XAFLAG and AXFLAG: ignored when decoding, as LLVM and the CPU we check against do.
     id: 'cfinv',
     mnemonic: 'cfinv',
     group: 'cond',
     feature: 'flagm',
-    bits: '11010101000000000100 0000 000 11111',
+    bits: '11010101000000000100 CRm:4 000 11111',
     syntax: '',
     desc: T('把进位标志 C 取反', 'Invert the carry flag C'),
     exec: (c) => c.setFlags(c.flags() ^ 2),
@@ -238,7 +258,7 @@ export const INSTRS: InstrSpec[] = [
     mnemonic: 'xaflag',
     group: 'cond',
     feature: 'flagm2',
-    bits: '11010101000000000100 0000 001 11111',
+    bits: '11010101000000000100 CRm:4 001 11111',
     syntax: '',
     desc: T('把浮点比较的标志从“外部格式”转成 Arm 格式', 'Convert floating-point comparison flags from the external format to Arm\'s'),
     exec: (c) => {
@@ -253,7 +273,7 @@ export const INSTRS: InstrSpec[] = [
     mnemonic: 'axflag',
     group: 'cond',
     feature: 'flagm2',
-    bits: '11010101000000000100 0000 010 11111',
+    bits: '11010101000000000100 CRm:4 010 11111',
     syntax: '',
     desc: T('把浮点比较的标志从 Arm 格式转成“外部格式”', 'Convert floating-point comparison flags from Arm\'s format to the external one'),
     exec: (c) => {
@@ -369,6 +389,16 @@ export const ALIASES: AliasSpec[] = [
       desc: T('分支目标标记：间接跳转可以落在这里（这里不检查，相当于 NOP）', 'Branch target identification: indirect branches may land here (not checked here, so a NOP)'),
     }),
   ),
+  // Newer assemblers also accept (and LLVM prints) BTI without targets as "bti r"; we print plain "bti".
+  {
+    id: 'btir',
+    of: 'hint',
+    mnemonic: 'bti',
+    syntax: 'r',
+    fixed: { imm: 32 },
+    prefer: false,
+    desc: T('分支目标标记，不限定目标（同 bti）', 'Branch target identification without targets (the same as bti)'),
+  },
   { id: 'psb', of: 'hint', mnemonic: 'psb', syntax: 'csync', fixed: { imm: 17 }, desc: T('性能采样同步屏障（这里没有效果）', 'Profiling synchronization barrier (no effect here)') },
   { id: 'ssbb', of: 'dsb', mnemonic: 'ssbb', syntax: '', fixed: { CRm: 0 }, desc: T('推测性存储旁路屏障', 'Speculative store bypass barrier') },
   { id: 'pssbb', of: 'dsb', mnemonic: 'pssbb', syntax: '', fixed: { CRm: 4 }, desc: T('按物理地址的推测性存储旁路屏障', 'Physical speculative store bypass barrier') },

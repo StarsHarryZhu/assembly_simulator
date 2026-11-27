@@ -372,16 +372,33 @@ export class Session {
     const m = this.machine!
     if (m.halted || m.pending) return null
     const before = m.halted
-    let info = m.step()
-    if (this.granularity === 'line') {
-      let n = 0
-      while (!m.halted && !m.pending && n++ < LINE_STEP_LIMIT && this.currentPart && this.currentPart.part !== 0) {
-        info = merge(info, m.step())
+    let info: StepInfo
+    try {
+      info = m.step()
+      if (this.granularity === 'line') {
+        let n = 0
+        while (!m.halted && !m.pending && n++ < LINE_STEP_LIMIT && this.currentPart && this.currentPart.part !== 0) {
+          info = merge(info, m.step())
+        }
       }
+    } catch (e) {
+      this.internalError(e)
+      return null
     }
     this.last = info
     this.noteHalt(before)
     return info
+  }
+
+  /**
+   * A fault in the simulator itself (the machine has taken back the step that hit it): stop running, say so
+   * in the console, and keep the session usable instead of leaving it stuck in run mode.
+   */
+  private internalError(e: unknown): void {
+    this.stopTimer()
+    this.mode = 'idle'
+    this.emit('error', L(`\n模拟器内部错误：${String(e)}\n`, `\nInternal simulator error: ${String(e)}\n`))
+    console.error(e)
   }
 
   /** Undo one step. After an edit the old history no longer matches the code, so it reassembles instead. */
@@ -427,8 +444,15 @@ export class Session {
       if (this.mode !== 'running') return
       const before = m.halted
       const deadline = now() + SLICE_MS
-      let r = m.run(RUN_CHUNK, this.breakpointAddrs, skipFirstBreak)
-      for (let n = 1; r.stop === 'limit' && n < MAX_CHUNKS && now() < deadline; n++) r = m.run(RUN_CHUNK, this.breakpointAddrs, false)
+      let r: ReturnType<Machine['run']>
+      try {
+        r = m.run(RUN_CHUNK, this.breakpointAddrs, skipFirstBreak)
+        for (let n = 1; r.stop === 'limit' && n < MAX_CHUNKS && now() < deadline; n++) r = m.run(RUN_CHUNK, this.breakpointAddrs, false)
+      } catch (e) {
+        this.internalError(e)
+        this.notify()
+        return
+      }
       this.noteHalt(before)
       if (r.stop === 'limit') this.timer = setTimeout(() => slice(false), 0)
       else if (r.stop === 'sleep') this.timer = setTimeout(() => slice(false), m.lastSleep ?? 0)
@@ -509,6 +533,15 @@ export class Session {
   }
 
   private continueAfterInput(): void {
+    try {
+      this.finishInput()
+    } catch (e) {
+      this.internalError(e)
+      this.notify()
+    }
+  }
+
+  private finishInput(): void {
     if (this.mode === 'running') {
       // complete the waiting instruction, then keep running
       const before = this.machine!.halted

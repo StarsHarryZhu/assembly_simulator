@@ -158,7 +158,7 @@ const totalWords = computed(() => analysis.value.instructions.map((i) => hex8(i.
         <button v-for="g in isa.catalogGroups" :key="g.id" class="chip" :aria-pressed="group === g.id" @click="group = g.id">{{ tx(g.title) }}</button>
         <button v-if="directiveRows.size" class="chip" :aria-pressed="group === DIRECTIVES" @click="group = DIRECTIVES">{{ t('伪操作', 'Directives') }}</button>
       </div>
-      <input v-model="query" class="inp search" type="search" :placeholder="t('搜索指令、伪操作或说明，如 sll、乘法、.word', 'Search instructions, directives or descriptions, e.g. sll, multiply, .word')"
+      <input v-model="query" class="inp search" type="search" :placeholder="t(`搜索指令、伪操作或说明，如 ${isa.samples.search[0]}、乘法、${isa.samples.search[1]}`, `Search instructions, directives or descriptions, e.g. ${isa.samples.search[0]}, multiply, ${isa.samples.search[1]}`)"
         spellcheck="false"
         :aria-label="t('搜索指令', 'Search instructions')"
       />

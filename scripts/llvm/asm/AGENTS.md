@@ -12,8 +12,10 @@ refuses.
 
 ## 3. Contents
 
-- `base.s` — aliases, immediate forms, system operations, MOPS, atomics and UNPREDICTABLE choices.
+- `base.s` — aliases, immediate forms, system operations, MOPS, atomics, UNPREDICTABLE choices, and
+  operand spellings (`#` rules, shift and extend amounts, lane indexes, FMOV immediates).
 
 ## 4. Progress
 
-Done: 263 lines for the A64 base. Not done: lines for the later phases.
+Done: 329 lines; the phase 5 deep check added the operand spellings where we differed from clang. Not
+done: nothing outstanding.

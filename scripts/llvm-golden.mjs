@@ -7,6 +7,8 @@
  *
  *   node scripts/llvm-golden.mjs
  *   ONLY=fp,simd node scripts/llvm-golden.mjs   (just those groups)
+ *   SEED=5 PER=96 COUNT=30000 OUT=/tmp/deep node scripts/llvm-golden.mjs   (a deeper survey elsewhere; replay
+ *   it with LLVM_DIR=/tmp/deep npx vitest run tests/arm64/llvm.test.ts)
  *
  * Writes, per catalog group, `{ cases: [[word, addr, text]] }` — LLVM's disassembly of random words inside
  * each of our encodings — and, per instruction class, the same for random words across the class (text
@@ -18,12 +20,16 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runnerImport } from 'vite'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const OUT = join(ROOT, 'tests', 'arm64', 'golden', 'llvm')
+const OUT = process.env.OUT ? resolve(process.env.OUT) : join(ROOT, 'tests', 'arm64', 'golden', 'llvm')
+/** Generator seed, words per encoding and words per class; unset, the committed fixtures' defaults. */
+const SEED = process.env.SEED ? Number(process.env.SEED) : undefined
+const PER = process.env.PER ? Number(process.env.PER) : undefined
+const COUNT = process.env.COUNT ? Number(process.env.COUNT) : undefined
 const ASM = join(ROOT, 'scripts', 'llvm', 'asm')
 const PROGRAMS = join(ROOT, 'scripts', 'llvm', 'programs')
 const CLANG = process.env.CLANG ?? 'clang'
@@ -69,7 +75,7 @@ function assemble(lines) {
   const obj = join(tmp, 'a.o')
   // Every line goes in its own numbered section so an error in one leaves the others' places alone.
   writeFileSync(src, lines.map((l, i) => `.section .t${i},"ax"\n${l}${follower(l)}`).join('\n') + '\n')
-  const r = spawnSync(CLANG, ['-c', ...TARGET, src, '-o', obj], { encoding: 'utf8' })
+  const r = spawnSync(CLANG, ['-c', ...TARGET, src, '-o', obj], { encoding: 'utf8', maxBuffer: 1 << 30 })
   const bad = new Set()
   // Line numbers in the file back to input lines (a MOVPRFX's follower takes a line of its own).
   const lineOf = []
@@ -138,7 +144,7 @@ mkdirSync(OUT, { recursive: true })
 // ONLY=fp,simd regenerates just those groups and leaves every other fixture alone.
 const only = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null
 if (!only) for (const name of readdirSync(OUT)) if (name.endsWith('.json')) rmSync(join(OUT, name))
-for (const { group, words } of [...cases.wordCases(), ...cases.classCases(), ...cases.sysCases()]) {
+for (const { group, words } of [...cases.wordCases(PER, SEED), ...cases.classCases(COUNT, SEED === undefined ? undefined : SEED + 1000), ...cases.sysCases()]) {
   if (only && !only.has(group)) continue
   writeFileSync(join(OUT, `${group}.json`), JSON.stringify({ cases: cases_(words) }, null, 0) + '\n')
   console.log(`${group}: ${words.length} words`)

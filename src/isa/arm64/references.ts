@@ -340,9 +340,10 @@ export const DIRECTIVES_TABLE: ReferenceTable = {
       title: T('数据', 'Data'),
       rows: [
         dir('.byte', T('8 位整数', 'Bytes'), T('每个值占 1 字节。可以写字符，如 \'a\'。', 'One byte per value. Characters like \'a\' work too.'), '.byte 1, 2, \'a\''),
-        dir('.hword', T('16 位整数', '16-bit values'), T('每个值占 2 字节，也写作 .short、.2byte。不会自动对齐。', 'Two bytes per value; also .short, .2byte. Not aligned automatically.'), '.hword 0x1234'),
+        dir('.hword', T('16 位整数', '16-bit values'), T('每个值占 2 字节，也写作 .short、.2byte、.value。不会自动对齐。', 'Two bytes per value; also .short, .2byte, .value. Not aligned automatically.'), '.hword 0x1234'),
         dir('.word', T('32 位整数', '32-bit values'), T('每个值占 4 字节，也写作 .long、.int、.4byte。不会自动对齐，需要时先写 .balign 4。', 'Four bytes per value; also .long, .int, .4byte. Not aligned automatically: write .balign 4 first when needed.'), '.word 1, -2, 0x30'),
         dir('.quad', T('64 位整数', '64-bit values'), T('每个值占 8 字节，也写作 .xword、.dword、.8byte。写标签就存它的地址。', 'Eight bytes per value; also .xword, .dword, .8byte. A label stores its address.'), '.quad table, 0'),
+        dir('.octa', T('128 位整数', '128-bit values'), T('每个值占 16 字节，只能直接写数（不能写表达式或标签）。', 'Sixteen bytes per value, written as plain numbers (no expressions or labels).'), '.octa 0x0123456789abcdef0123456789abcdef'),
         dir('.float', T('单精度浮点数', 'Single-precision floats'), T('每个值占 4 字节，也写作 .single。', 'Four bytes per value; also .single.'), '.float 1.5'),
         dir('.double', T('双精度浮点数', 'Double-precision floats'), T('每个值占 8 字节。', 'Eight bytes per value.'), '.double 3.14'),
         dir('.ascii', T('字符串（不加 0）', 'String without a 0'), T('按 UTF-8 存字符，结尾不加 0。支持 \\n \\t \\" \\\\ \\x41 \\101 这样的转义。', 'Characters in UTF-8, no terminating 0. Escapes such as \\n \\t \\" \\\\ \\x41 \\101 work.'), '.ascii "abc"'),
@@ -355,8 +356,8 @@ export const DIRECTIVES_TABLE: ReferenceTable = {
     {
       title: T('对齐和位置', 'Alignment and position'),
       rows: [
-        dir('.balign', T('按字节数对齐', 'Align to bytes'), T('.balign 字节数[, 填充值[, 最多跳过]]：对齐到 2 的幂字节。代码段里用 nop 填充。', '.balign bytes[, fill[, max]]: align to a power-of-two byte count. Code is padded with nop.'), '.balign 8'),
-        dir('.p2align', T('按 2 的幂对齐', 'Align to a power of two'), T('.p2align n 对齐到 2ⁿ 字节；在 AArch64 上 .align n 也是 2ⁿ。', '.p2align n aligns to 2ⁿ bytes; on AArch64 .align n means 2ⁿ too.'), '.p2align 3'),
+        dir('.balign', T('按字节数对齐', 'Align to bytes'), T('.balign 字节数[, 填充值[, 最多跳过]]：对齐到 2 的幂字节。代码段里用 nop 填充。.balignw、.balignl 用 2 字节、4 字节的值填充。', '.balign bytes[, fill[, max]]: align to a power-of-two byte count. Code is padded with nop. .balignw and .balignl fill with 2- and 4-byte values.'), '.balign 8'),
+        dir('.p2align', T('按 2 的幂对齐', 'Align to a power of two'), T('.p2align n 对齐到 2ⁿ 字节；在 AArch64 上 .align n 也是 2ⁿ。.p2alignw、.p2alignl 用 2 字节、4 字节的值填充。', '.p2align n aligns to 2ⁿ bytes; on AArch64 .align n means 2ⁿ too. .p2alignw and .p2alignl fill with 2- and 4-byte values.'), '.p2align 3'),
         dir('.org', T('跳到位置', 'Move forward'), T('把当前位置移到段内的某个偏移（或这一段里的地址），只能往后。', 'Moves the location to an offset in the section (or an address in it); only forwards.'), '.org 0x400'),
         dir('.ltorg', T('放字面量池', 'Place the literal pool'), T('ldr x0, =值 里放不进一条 movz 的值放进字面量池；池子默认在段尾，.ltorg（或 .pool）把它放在这里，用在离段尾超过 1 MB 的代码里。', 'Values of ldr x0, =value that one movz cannot make go into a literal pool, at the end of the section by default; .ltorg (or .pool) places it here, for code more than 1 MB from the end.'), 'ldr x0, =0x123456789\nb 1f\n.ltorg\n1:'),
       ],
@@ -372,11 +373,11 @@ export const DIRECTIVES_TABLE: ReferenceTable = {
     {
       title: T('宏和条件', 'Macros and conditions'),
       rows: [
-        dir('.macro', T('宏', 'Macro'), T('.macro 名字 参数[=默认值]… 到 .endm；里面用 \\参数，\\@ 是展开的序号。参数可以写 :req（必填）或 :vararg（剩下的全部）。', '.macro name param[=default]… up to .endm; use \\param inside, and \\@ for the expansion count. A parameter may be :req or :vararg.'), '.macro push a, b\n    stp \\a, \\b, [sp, #-16]!\n.endm'),
+        dir('.macro', T('宏', 'Macro'), T('.macro 名字 参数[=默认值]… 到 .endm（或 .endmacro）；里面用 \\参数，\\@ 是全部展开的序号，\\+ 是这个宏的展开次数。参数可以写 :req（必填）或 :vararg（剩下的全部），调用时也可以按名字给（名字=值）。宏名区分大小写；.exitm 提前结束这次展开，.purgem 名字 删掉一个宏。', '.macro name param[=default]… up to .endm (or .endmacro); use \\param inside, \\@ for the count of all expansions and \\+ for this macro\'s. A parameter may be :req or :vararg, and a call may name its arguments (name=value). Macro names are case-sensitive; .exitm ends the expansion early and .purgem name deletes a macro.'), '.macro push a, b\n    stp \\a, \\b, [sp, #-16]!\n.endm'),
         dir('.rept', T('重复', 'Repeat'), T('.rept 次数 … .endr 把中间的内容重复几次；.irp 符号, 值1, 值2 … .endr 对每个值重复一次；.irpc 对每个字符。', '.rept n … .endr repeats the block; .irp sym, v1, v2 … .endr once per value; .irpc once per character.'), '.irp r, x19, x20\n    mov \\r, #0\n.endr'),
-        dir('.if', T('条件汇编', 'Conditional assembly'), T('.if 表达式 … [.elseif …] [.else] … .endif；还有 .ifdef、.ifndef、.ifeq、.ifne、.ifgt、.ifge、.iflt、.ifle、.ifc、.ifnc、.ifb、.ifnb。', '.if expr … [.elseif …] [.else] … .endif; also .ifdef, .ifndef, .ifeq, .ifne, .ifgt, .ifge, .iflt, .ifle, .ifc, .ifnc, .ifb, .ifnb.'), 'DEBUG = 1\n.if DEBUG\n    bl dump\n.endif'),
+        dir('.if', T('条件汇编', 'Conditional assembly'), T('.if 表达式 … [.elseif …] [.else] … .endif；还有 .ifdef、.ifndef（.ifnotdef）、.ifeq、.ifne、.ifgt、.ifge、.iflt、.ifle、.ifc、.ifnc、.ifeqs、.ifnes、.ifb、.ifnb。', '.if expr … [.elseif …] [.else] … .endif; also .ifdef, .ifndef (.ifnotdef), .ifeq, .ifne, .ifgt, .ifge, .iflt, .ifle, .ifc, .ifnc, .ifeqs, .ifnes, .ifb, .ifnb.'), 'DEBUG = 1\n.if DEBUG\n    bl dump\n.endif'),
         dir('.include', T('包含文件', 'Include a file'), T('.include "文件名" 把“文件”面板里的另一个文件插进来。', '.include "name" inserts another file from the Files panel.'), '.include "macros.s"'),
-        dir('.error', T('报错', 'Report an error'), T('.error "文字" 让汇编失败并显示这段文字；.warning 只给警告。', '.error "text" fails assembly with this text; .warning only warns.'), '.error "unsupported"'),
+        dir('.error', T('报错', 'Report an error'), T('.error "文字" 让汇编失败并显示这段文字，.err 不带文字；.warning 只给警告；.print "文字" 什么也不做（这里没有汇编器的输出窗口）；.end 结束汇编，后面的内容都不管。', '.error "text" fails assembly with this text, .err without one; .warning only warns; .print "text" does nothing (there is no assembler output here); .end stops assembly and ignores the rest.'), '.error "unsupported"'),
       ],
     },
     {

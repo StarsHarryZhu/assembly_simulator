@@ -48,3 +48,31 @@ end:    .word end - bytes
     .word 0x12345678
     .align 2
     nop
+// Character constants and string escapes as LLVM reads them, symbol values per definition, operators,
+// float spellings, wide data, alignment with value sizes and .org.
+    .data
+chars:  .byte '\0', 'a', '\'', '\t', '\n', '\\', '"'
+        .ascii "\x41\x4a42\101\0\177" "juxt"
+        .ascii ""
+        .byte
+        .quad 5 ! 2, 1 << 65, -1 >> 60, -16 >> 2
+X = 1
+        .byte X
+X = X + 1
+        .byte X, Y
+Y = 7
+        .float nan, inf, -infinity, 010, .5, 0x1.8p1, 1.00000005960464477539062500000001
+        .double nan, -0x1p-1074, 1e-320
+        .octa 0x0123456789abcdef0123456789abcdef, 0x1
+        .value 0x1234
+        .balign 2
+        .balignw 8, 0x1234
+        .p2alignl 4, 0xa1b2c3d4
+        .balign 0
+        .balign 16, 0x55, 3
+        .p2align 0
+        .byte 0xee
+        .balign 8, 0x77, 7
+        .org . + 3, 0x99
+        .word . - chars, chars - .
+        .fill 2, 4, 0x01020304

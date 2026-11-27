@@ -7,42 +7,128 @@ import type { Cpu } from './types'
 
 export const ESIZE = [8, 16, 32, 64, 128]
 
-export const maskEs = (es: number) => (1n << BigInt(ESIZE[es]!)) - 1n
+const MASKS = ESIZE.map((bits) => (1n << BigInt(bits)) - 1n)
+export const maskEs = (es: number) => MASKS[es]!
 export const sx = (v: bigint, es: number) => BigInt.asIntN(ESIZE[es]!, v)
 export const ux = (v: bigint, es: number) => BigInt.asUintN(ESIZE[es]!, v)
-export const ones = (es: number) => maskEs(es)
+export const ones = (es: number) => MASKS[es]!
 
-/** Bytes to elements of size es (unsigned). */
-export function elems(bytes: Uint8Array, es: number): bigint[] {
-  const n = ESIZE[es]! / 8
-  const out: bigint[] = []
-  for (let i = 0; i + n <= bytes.length; i += n) {
-    let v = 0n
-    for (let k = n - 1; k >= 0; k--) v = (v << 8n) | BigInt(bytes[i + k]!)
-    out.push(v)
+/** The little-endian 32-bit word at byte `at`. */
+const word = (b: Uint8Array, at: number) => (b[at]! | (b[at + 1]! << 8) | (b[at + 2]! << 16) | (b[at + 3]! << 24)) >>> 0
+
+// One 64-bit scratch cell seen at every width: storing a bigint into a BigUint64Array truncates it to 64 bits
+// without allocating, and the narrower views read its low bits back as numbers (Number(bigint) is a slow
+// runtime call in V8), so lanes convert without either.
+const S64 = new BigUint64Array(2)
+const S32 = new Uint32Array(S64.buffer)
+const S16 = new Uint16Array(S64.buffer)
+const S8 = new Uint8Array(S64.buffer)
+/** The low 32 bits of a bigint as an unsigned number. */
+export function lo32(v: bigint): number {
+  S64[0] = v
+  return S32[0]!
+}
+
+/** The 256 byte values as bigints, so byte lanes need no conversion. */
+const BYTE = Array.from({ length: 256 }, (_, i) => BigInt(i))
+
+/** `count` elements of size es (unsigned) from the bytes of b starting at `at`. */
+export function lanesAt(b: Uint8Array, at: number, count: number, es: number): bigint[] {
+  const out: bigint[] = new Array(count)
+  switch (es) {
+    case 0:
+      for (let i = 0; i < count; i++) out[i] = BYTE[b[at + i]!]!
+      break
+    case 1:
+      for (let i = 0, k = at; i < count; i++, k += 2) out[i] = BigInt(b[k]! | (b[k + 1]! << 8))
+      break
+    case 2:
+      for (let i = 0, k = at; i < count; i++, k += 4) out[i] = BigInt(word(b, k))
+      break
+    case 3:
+      for (let i = 0, k = at; i < count; i++, k += 8) {
+        S32[0] = word(b, k)
+        S32[1] = word(b, k + 4)
+        out[i] = S64[0]!
+      }
+      break
+    default:
+      for (let i = 0, k = at; i < count; i++, k += 16) {
+        S32[0] = word(b, k)
+        S32[1] = word(b, k + 4)
+        S32[2] = word(b, k + 8)
+        S32[3] = word(b, k + 12)
+        out[i] = S64[0]! | (S64[1]! << 64n)
+      }
   }
   return out
 }
 
+/** Store elements of size es (each truncated to its size) into b starting at byte `at`. */
+export function storeLanes(vals: bigint[], es: number, b: Uint8Array, at: number): void {
+  const count = vals.length
+  switch (es) {
+    case 0:
+      for (let i = 0; i < count; i++) {
+        S64[0] = vals[i]!
+        b[at + i] = S8[0]!
+      }
+      break
+    case 1:
+      for (let i = 0, k = at; i < count; i++, k += 2) {
+        S64[0] = vals[i]!
+        const x = S16[0]!
+        b[k] = x
+        b[k + 1] = x >>> 8
+      }
+      break
+    case 2:
+      for (let i = 0, k = at; i < count; i++, k += 4) {
+        S64[0] = vals[i]!
+        putWord(b, k, S32[0]!)
+      }
+      break
+    case 3:
+      for (let i = 0, k = at; i < count; i++, k += 8) {
+        S64[0] = vals[i]!
+        putWord(b, k, S32[0]!)
+        putWord(b, k + 4, S32[1]!)
+      }
+      break
+    default:
+      for (let i = 0, k = at; i < count; i++, k += 16) {
+        S64[0] = vals[i]!
+        S64[1] = vals[i]! >> 64n
+        putWord(b, k, S32[0]!)
+        putWord(b, k + 4, S32[1]!)
+        putWord(b, k + 8, S32[2]!)
+        putWord(b, k + 12, S32[3]!)
+      }
+  }
+}
+
+const putWord = (b: Uint8Array, at: number, x: number) => {
+  b[at] = x
+  b[at + 1] = x >>> 8
+  b[at + 2] = x >>> 16
+  b[at + 3] = x >>> 24
+}
+
+/** Bytes to elements of size es (unsigned). */
+export const elems = (bytes: Uint8Array, es: number): bigint[] =>
+  lanesAt(bytes, 0, Math.floor(bytes.length / (ESIZE[es]! / 8)), es)
+
 /** Elements of size es to bytes. */
 export function toBytes(vals: bigint[], es: number): Uint8Array {
-  const n = ESIZE[es]! / 8
-  const out = new Uint8Array(vals.length * n)
-  const m = maskEs(es)
-  vals.forEach((v0, i) => {
-    let v = v0 & m
-    for (let k = 0; k < n; k++) {
-      out[i * n + k] = Number(v & 0xffn)
-      v >>= 8n
-    }
-  })
+  const out = new Uint8Array((vals.length * ESIZE[es]!) / 8)
+  storeLanes(vals, es, out, 0)
   return out
 }
 
 /** Register n as elements: `bytes` 8 or 16. */
-export const readV = (c: Cpu, n: number, es: number, bytes: number) => elems(c.vread(n, bytes), es)
+export const readV = (c: Cpu, n: number, es: number, bytes: number) => c.vlanes(n, bytes, es)
 /** Write elements to register n (the rest of the register becomes zero). */
-export const writeV = (c: Cpu, n: number, vals: bigint[], es: number) => c.vwrite(n, toBytes(vals, es))
+export const writeV = (c: Cpu, n: number, vals: bigint[], es: number) => c.vsetLanes(n, vals, es)
 
 /** Saturate an integer to a signed or unsigned element; reports whether it saturated. */
 export function sat(v: bigint, es: number, unsigned: boolean): [bigint, boolean] {

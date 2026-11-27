@@ -222,6 +222,8 @@ export interface VirtualFileSystem {
   read(name: string): Uint8Array | null
   write(name: string, data: Uint8Array, append: boolean): void
   list(): string[]
+  /** Delete a file; undo uses it to take back a step that created one. */
+  remove?(name: string): void
 }
 
 export interface Machine {
@@ -461,6 +463,8 @@ export interface IsaPlugin {
     decoderExamples: { word: string; note: string }[]
     /** An instruction that pushes onto the stack, for the empty-stack hint, e.g. "addi $sp, $sp, -4". */
     push: string
+    /** A mnemonic and a directive the instruction set tab's search box suggests, e.g. ['sll', '.word']. */
+    search: [string, string]
   }
   /** The register that always reads zero, if any; the calculator's demo leaves it out of the inputs. */
   zeroRegister?: number

@@ -97,3 +97,97 @@ describe('soft float', () => {
     expect(numD(sf.fpMulAdd(env(), sf.F64, bitsD(-1), a, b))).toBe(-(2 ** -104))
   })
 })
+
+describe('native fast path', () => {
+  /** A deterministic generator of 32-bit words (mulberry32). */
+  function gen(seed: number) {
+    let a = seed >>> 0
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0
+      let t = a
+      t = Math.imul(t ^ (t >>> 15), t | 1)
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+      return (t ^ (t >>> 14)) >>> 0
+    }
+  }
+  const FPCRS = [0, sf.FZ, sf.DN, sf.AH, sf.FIZ, sf.FZ | sf.DN | sf.AH, sf.FZ | sf.FIZ, 1 << 22, 2 << 22, 3 << 22]
+
+  /** Operands for one format: random bits, near-equal pairs, wide gaps, edges of the range, zeros and specials. */
+  function operands(single: boolean, n: number, seed: number): bigint[][] {
+    const w = gen(seed)
+    const bits = (): bigint => (single ? BigInt(w()) : (BigInt(w()) << 32n) | BigInt(w()))
+    const [E, F, N] = single ? [8, 23, 32] : [11, 52, 64]
+    const make = (s: number, e: number, frac: bigint) => (BigInt(s) << BigInt(N - 1)) | (BigInt(e) << BigInt(F)) | frac
+    const fracR = () => bits() & ((1n << BigInt(F)) - 1n)
+    const bias = (1 << (E - 1)) - 1
+    const maxE = (1 << E) - 2
+    const pick = (): bigint => {
+      const k = w() % 10
+      if (k < 3) return bits()
+      if (k < 6) return make(w() & 1, bias + ((w() % 41) - 20), fracR())
+      if (k === 6) return make(w() & 1, w() % 3 === 0 ? maxE - (w() % 2) : 1 + (w() % 4), fracR())
+      if (k === 7) return make(w() & 1, 0, w() % 2 ? 0n : fracR())
+      if (k === 8) return make(w() & 1, maxE + 1, w() % 2 ? 0n : fracR())
+      return make(w() & 1, bias + ((w() % 401) - 200), fracR() & ~((1n << BigInt(F - 3)) - 1n))
+    }
+    const out: bigint[][] = []
+    for (let i = 0; i < n; i++) {
+      const a = pick()
+      const kind = w() % 4
+      // Near-equal: the other operand is ±a nudged a few ulps (cancellation).
+      const b = kind === 0 ? ((a ^ (BigInt(w() & 1) << BigInt(N - 1))) + BigInt((w() % 5) - 2)) & ((1n << BigInt(N)) - 1n) : pick()
+      out.push([a, b, pick()])
+    }
+    return out
+  }
+
+  /** Single-precision multiply-adds whose double sum lands exactly halfway between two singles (double rounding). */
+  function ties(n: number, seed: number): bigint[][] {
+    const w = gen(seed)
+    const out: bigint[][] = []
+    for (let i = 0; i < n; i++) {
+      const e = 20 + (w() % 200)
+      const a = numS((BigInt(w() & 1) << 31n) | (BigInt(e) << 23n) | BigInt(w() & 0x7fffff))
+      const half = 2 ** (e - 127 - 24)
+      const sb = w() & 1 ? 1 : -1
+      // (1 ± 2^-23)(1 ∓ 2^-23) = 1 − 2^-46: a product just short of (or past) half an ulp of a.
+      out.push([bitsS(a), bitsS(sb * (1 + 2 ** -23)), bitsS((w() & 1 ? 1 : -1) * (1 - 2 ** -23) * half)])
+    }
+    return out
+  }
+
+  function compare(name: string, single: boolean, cases: bigint[][], run: (env: sf.FpEnv, x: bigint[]) => bigint) {
+    const problems: string[] = []
+    let fastHits = 0
+    for (const x of cases)
+      for (const fpcr of FPCRS) {
+        sf.fast.on = true
+        const e1 = new sf.FpEnv(fpcr)
+        const r1 = run(e1, x)
+        sf.fast.on = false
+        const e2 = new sf.FpEnv(fpcr)
+        const r2 = run(e2, x)
+        sf.fast.on = true
+        if (r1 !== r2 || e1.flags !== e2.flags) problems.push(`${name} ${x.map((v) => v.toString(16)).join(' ')} FPCR ${fpcr.toString(16)}: ${r1.toString(16)}/${e1.flags} exact ${r2.toString(16)}/${e2.flags}`)
+        if (fpcr === 0 && (single ? numS : numD)(r1) !== 0) fastHits++
+      }
+    expect(problems.slice(0, 10), `${problems.length} problems`).toEqual([])
+    expect(fastHits).toBeGreaterThan(cases.length / 4)
+  }
+
+  for (const single of [true, false]) {
+    const fmt = single ? sf.F32 : sf.F64
+    const name = single ? 'single' : 'double'
+    it(`${name}: add, subtract and multiply give the exact path's results and flags`, () => {
+      const cases = operands(single, 20000, single ? 5 : 6)
+      compare('add', single, cases, (env, [a, b]) => sf.fpAdd(env, fmt, a!, b!))
+      compare('sub', single, cases, (env, [a, b]) => sf.fpSub(env, fmt, a!, b!))
+      compare('mul', single, cases, (env, [a, b]) => sf.fpMul(env, fmt, a!, b!))
+    })
+  }
+
+  it("single: multiply-add gives the exact path's results and flags, double-rounding ties included", () => {
+    compare('fma', true, operands(true, 20000, 7), (env, [a, b, c]) => sf.fpMulAdd(env, sf.F32, a!, b!, c!))
+    compare('fma tie', true, ties(5000, 8), (env, [a, b, c]) => sf.fpMulAdd(env, sf.F32, a!, b!, c!))
+  })
+})

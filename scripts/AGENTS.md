@@ -19,13 +19,16 @@ Java helper that lists the instruction forms MARS knows, used when checking our 
 ## 3. Contents
 
 - `mars-golden.mjs` — runs MARS on `tests/golden/programs/*.asm` and the IDE examples and writes one
-  JSON fixture per program (`npm run golden`, optionally with program names).
+  JSON fixture per program (`npm run golden`, optionally with program names; `GOLDEN_DIR=<dir>` reads and
+  writes another folder, for deeper random checks replayed with the same variable).
 - `mars` — a Java helper that prints MARS's instruction forms.
 - `llvm-golden.mjs` — the AArch64 encoding oracle: clang and objdump on cases from our own table
-  (`npm run llvm-golden`), written to `tests/arm64/golden/llvm`.
+  (`npm run llvm-golden`), written to `tests/arm64/golden/llvm`; `SEED`, `PER`, `COUNT` and `OUT` make a
+  deeper survey elsewhere, replayed with `LLVM_DIR`.
 - `llvm` — the cases, handwritten lines and whole programs `llvm-golden.mjs` uses.
 - `native-golden.mjs` — the AArch64 behaviour oracle: runs cases on this Mac's CPU (`npm run native-golden`,
-  `ONLY=<groups>` for some, `PER=<n>` for more SVE or SME cases per encoding), the SVE groups in streaming
+  `ONLY=<groups>` for some, `PER=<n>` for more cases per encoding, `SEED` and `OUT` for a deeper run elsewhere,
+  replayed with `NATIVE_DIR`), the SVE groups in streaming
   mode, the SME groups with ZA too, and the four-state SVCR probe, written to `tests/arm64/golden/native`.
 - `native` — the cases, starting states and C harnesses `native-golden.mjs` uses.
 

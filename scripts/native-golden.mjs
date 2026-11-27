@@ -5,7 +5,9 @@
  *
  *   node scripts/native-golden.mjs
  *   ONLY=sve,sve2 node scripts/native-golden.mjs   (just those groups)
- *   PER=15 ONLY=sme node scripts/native-golden.mjs (more cases per SVE or SME encoding, for a deeper check)
+ *   PER=15 ONLY=sme node scripts/native-golden.mjs (more cases per encoding, for a deeper check)
+ *   SEED=7 PER=16 OUT=/tmp/deep node scripts/native-golden.mjs   (other words and states, elsewhere; replay
+ *   them with NATIVE_DIR=/tmp/deep npx vitest run tests/arm64/native.test.ts tests/arm64/streaming.test.ts)
  *
  * Cases come from scripts/native/cases.ts. Each becomes a function in a generated cases.s that loads the
  * registers and NZCV, runs the instruction word, and stores them back; scripts/native/harness.c runs them
@@ -28,7 +30,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
 import { arch, platform, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runnerImport } from 'vite'
 
@@ -37,7 +39,10 @@ if (platform() !== 'darwin' || arch() !== 'arm64') {
   process.exit(1)
 }
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const OUT = join(ROOT, 'tests', 'arm64', 'golden', 'native')
+const OUT = process.env.OUT ? resolve(process.env.OUT) : join(ROOT, 'tests', 'arm64', 'golden', 'native')
+/** Generator seed and cases per encoding; unset, each kind keeps the defaults the committed fixtures use. */
+const SEED = process.env.SEED ? Number(process.env.SEED) : undefined
+const PER = process.env.PER ? Number(process.env.PER) : undefined
 const CLANG = process.env.CLANG ?? 'clang'
 const SIGNALS = { 4: 'sigill', 5: 'sigtrap', 10: 'sigbus', 11: 'sigsegv' }
 
@@ -46,7 +51,7 @@ const only = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null
 const wanted = (group) => !only || only.has(group)
 mkdirSync(OUT, { recursive: true })
 if (!only) for (const name of readdirSync(OUT)) if (name.endsWith('.json')) rmSync(join(OUT, name))
-const cases = lib.nativeCases().filter((c) => wanted(c.group))
+const cases = lib.nativeCases(PER, SEED).filter((c) => wanted(c.group))
 const states = cases.map((c) => lib.initialState(c.seed, c.ptr, c.small))
 const vstates = cases.map((c) => lib.vectorState(c.seed))
 const M64 = (1n << 64n) - 1n
@@ -211,7 +216,7 @@ async function runStreaming(za) {
   copyFileSync(join(ROOT, 'scripts', 'native', 'sve-harness.c'), join(tmp, 'sve-harness.c'))
   execFileSync(CLANG, [...FLAGS, join(tmp, 'sve-harness.c'), join(tmp, 'sve-cases.s'), '-o', join(tmp, 'sve-harness')])
   const vl = Number(execFileSync(join(tmp, 'sve-harness')).toString().trim())
-  const list = kind.make(vl, process.env.PER ? Number(process.env.PER) : undefined).filter((c) => wanted(c.group))
+  const list = kind.make(vl, PER, SEED).filter((c) => wanted(c.group))
   const inputs = list.map((c) => kind.inputs(c.seed, c.ptr, c.small, vl))
   const [load, store] = za ? ['_load_zazp', '_store_zazp'] : ['_load_zp', '_store_zp']
 
@@ -326,7 +331,7 @@ async function runStreaming(za) {
  * with the signal name or null for states 0 (neither), 1 (SM), 2 (ZA) and 3 (both).
  */
 function runModes() {
-  const list = lib.modeCases()
+  const list = lib.modeCases(undefined, SEED)
   const asm = ['.arch armv9.4-a+sme2p1+sve2p1+sme-f64f64+sme-i16i64+sme-f16f16+sme-b16b16+sve-b16b16', '.data', '.p2align 4', '_saved_sp: .quad 0', '_scratch: .space 32768', '_scratch_top: .space 32768', '.text']
   // x0: the state. Bit 0 enters Streaming SVE mode, bit 1 enables ZA.
   asm.push('_enter_mode:', 'tbz x0, #0, 1f', 'smstart sm', '1:', 'tbz x0, #1, 2f', 'smstart za', '2:', 'ret')

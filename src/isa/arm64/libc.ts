@@ -8,7 +8,7 @@
 import { L, T, type Text } from '../../core/i18n'
 import { F128, formatFloat, numberPrefix, parseFloatBits } from './fpformat'
 import { F32, F64 } from './softfloat'
-import { MALLOC_BASE, MALLOC_LIMIT, readBytes, readCString, STUB_BASE, toUtf8, utf8, writeBytes, type Block, type Host } from './linux'
+import { MALLOC_BASE, MALLOC_LIMIT, readBytes, readCString, STUB_BASE, writeBytes, writeTerminal, type Block, type Host } from './linux'
 
 export interface LibcFunction {
   name: string
@@ -34,111 +34,226 @@ const u64 = (v: bigint | number) => BigInt.asUintN(64, BigInt(v))
 
 /* ------------------------------------------------------------------ printf */
 
+/** Bytes one printf or sprintf call may produce; past this the simulator stops the program instead. */
+const MAX_OUT = 1 << 24
+/** Float digits past this many are zeros for every format, so they are not computed. */
+const FLOAT_DIGITS = 17000
+const INT_MAX = 0x7fffffff
+
+/** One conversion specification: `%[n$][flags][width][.precision][length]conversion`. */
+interface Spec {
+  /** Where it starts (the '%') and ends (after the conversion character). */
+  start: number
+  end: number
+  flags: string
+  /** Width and precision written in the format (-1: none), or the argument that holds them (-1: none). */
+  width: number
+  widthArg: number
+  precision: number
+  precArg: number
+  length: string
+  /** The conversion character; empty when the format ends inside the specification. */
+  conv: string
+  /** The argument it converts (-1: none). */
+  arg: number
+}
+
+/** How an argument is passed: in an x register, a d register (double) or a q register (long double). */
+type Kind = 'x' | 'd' | 'q'
+
+const isDigit = (b: number | undefined) => b !== undefined && b >= 0x30 && b <= 0x39
+const FLOAT_CONV = 'fFeEgGaA'
+const ARG_CONV = 'diouxXcspn' + FLOAT_CONV
+
+/** Parse every specification and say which argument each one reads (sequentially, or by `n$`). */
+function parseFormat(fmt: Uint8Array): { specs: Spec[]; kinds: Kind[]; overflow: boolean } {
+  const specs: Spec[] = []
+  const kinds: Kind[] = []
+  let next = 0
+  let overflow = false
+  const number = (j: number): [number, number] => {
+    let v = 0
+    for (; isDigit(fmt[j]); j++) v = Math.min(v * 10 + fmt[j]! - 0x30, INT_MAX + 1)
+    return [v, j]
+  }
+  /** An argument named by `m$` at j, or the next one in order. */
+  const argAt = (j: number, kind: Kind): [number, number] => {
+    const [v, k] = number(j)
+    const index = k > j && fmt[k] === 0x24 && v > 0 ? v - 1 : next++
+    kinds[index] ??= kind
+    return [index, k > j && fmt[k] === 0x24 && v > 0 ? k + 1 : j]
+  }
+  for (let i = 0; i < fmt.length; i++) {
+    if (fmt[i] !== 0x25) continue
+    const spec: Spec = { start: i, end: 0, flags: '', width: -1, widthArg: -1, precision: -1, precArg: -1, length: '', conv: '', arg: -1 }
+    let j = i + 1
+    // %n$: the argument's position.
+    let pos = -1
+    const [p, k] = number(j)
+    if (k > j && fmt[k] === 0x24 && p > 0) {
+      pos = p - 1
+      j = k + 1
+    }
+    while (j < fmt.length && "-+ #0'I".includes(String.fromCharCode(fmt[j]!))) spec.flags += String.fromCharCode(fmt[j++]!)
+    if (fmt[j] === 0x2a) [spec.widthArg, j] = argAt(j + 1, 'x')
+    else [spec.width, j] = isDigit(fmt[j]) ? number(j) : [-1, j]
+    if (fmt[j] === 0x2e) {
+      if (fmt[j + 1] === 0x2a) [spec.precArg, j] = argAt(j + 2, 'x')
+      else [spec.precision, j] = number(j + 1)
+    }
+    if (spec.width > INT_MAX || spec.precision > INT_MAX) overflow = true
+    const two = String.fromCharCode(fmt[j] ?? 0, fmt[j + 1] ?? 0)
+    if (two === 'hh' || two === 'll') spec.length = two
+    else if ('hlLqjzZt'.includes(two[0]!) && two[0] !== '\0') spec.length = two[0]!
+    j += spec.length.length
+    spec.conv = j < fmt.length ? String.fromCharCode(fmt[j]!) : ''
+    spec.end = Math.min(j + 1, fmt.length)
+    if (spec.conv && ARG_CONV.includes(spec.conv)) {
+      const kind: Kind = FLOAT_CONV.includes(spec.conv) ? (spec.length === 'L' ? 'q' : 'd') : 'x'
+      spec.arg = pos >= 0 ? pos : next++
+      kinds[spec.arg] ??= kind
+    }
+    specs.push(spec)
+    i = spec.end - 1
+  }
+  return { specs, kinds, overflow }
+}
+
+/** printf's output: the bytes it keeps, and how many it produced in all. */
+class Output {
+  bytes: number[] = []
+  count = 0
+  constructor(
+    private keep: number,
+    private tooLong: (() => never) | null,
+  ) {}
+  fill(b: number, n: number) {
+    if (n <= 0) return
+    if (this.tooLong && this.count + n > this.keep) this.tooLong()
+    for (let k = Math.min(n, this.keep - this.count); k > 0; k--) this.bytes.push(b)
+    this.count += n
+  }
+  add(bytes: ArrayLike<number>) {
+    if (this.tooLong && this.count + bytes.length > this.keep) this.tooLong()
+    for (let k = 0; k < bytes.length && this.count + k < this.keep; k++) this.bytes.push(bytes[k]!)
+    this.count += bytes.length
+  }
+}
+
+const ascii = (s: string) => Array.from(s, (c) => c.charCodeAt(0))
+
 /**
- * Format like printf; the variadic arguments start at integer slot `first`. As on Linux (AAPCS64),
+ * Format like glibc's printf; the variadic arguments start at integer slot `first`. As on Linux (AAPCS64),
  * integers come from x registers and floating-point values from v0–v7, each until its registers run out,
- * and then both from the stack in order. Returns the bytes.
+ * and then both from the stack in order. `keep` bytes are kept (the rest only counted); `name` is the
+ * function, for the message when the output is longer than the simulator produces. `failed` is set where
+ * glibc returns -1: a width or precision past INT_MAX, a total past INT_MAX, or a format that ends inside a
+ * conversion.
  */
-function format(h: Host, fmt: Uint8Array, args: Args, first: number): number[] {
-  const out: number[] = []
+function format(h: Host, fmt: Uint8Array, args: Args, first: number, keep: number, name: string | null): { out: Output; failed: boolean } {
+  const tooLong = name === null ? null : (): never => h.abort('limit', L(`${name}：输出超过 ${MAX_OUT} 字节，模拟器不再生成（真正的 glibc 会照常输出）`, `${name}: the output is longer than ${MAX_OUT} bytes, which the simulator does not produce (glibc would print it)`))
+  const out = new Output(keep, tooLong)
+  const { specs, kinds, overflow } = parseFormat(fmt)
+  // Fetch every argument first, in order, each from where its type is passed.
   let gp = first
   let fr = 0
   let st = Math.max(0, first - 8)
-  const arg = () => (gp < 8 ? args(gp++) : args.stack(st++))
-  const fpArg = (quad: boolean) => {
-    if (fr < 8) return args.fp(fr++)
-    // A long double on the stack takes a 16-byte aligned pair of slots.
-    if (!quad) return args.stack(st++)
-    st += st & 1
-    const lo = args.stack(st++)
-    return (args.stack(st++) << 64n) | lo
-  }
-  for (let i = 0; i < fmt.length; i++) {
-    const ch = fmt[i]!
-    if (ch !== 0x25 /* % */) {
-      out.push(ch)
-      continue
+  const values: bigint[] = []
+  for (let k = 0; k < kinds.length; k++) {
+    const kind = kinds[k] ?? 'x'
+    if (kind === 'x') values.push(gp < 8 ? args(gp++) : args.stack(st++))
+    else if (fr < 8) values.push(args.fp(fr++))
+    else if (kind === 'd') values.push(args.stack(st++))
+    else {
+      // A long double on the stack takes a 16-byte aligned pair of slots.
+      st += st & 1
+      const lo = args.stack(st++)
+      values.push((args.stack(st++) << 64n) | lo)
     }
-    const start = i
-    let flags = ''
-    while (i + 1 < fmt.length && '-+ #0'.includes(String.fromCharCode(fmt[i + 1]!))) flags += String.fromCharCode(fmt[++i]!)
-    let width = 0
-    if (fmt[i + 1] === 0x2a) {
-      i++
-      width = i32(arg())
+  }
+  if (overflow) return { out, failed: true }
+  let at = 0
+  for (const s of specs) {
+    out.add(fmt.subarray(at, s.start))
+    at = s.end
+    if (!s.conv) return { out, failed: true }
+    let flags = s.flags
+    let width = s.width < 0 ? 0 : s.width
+    if (s.widthArg >= 0) {
+      width = i32(values[s.widthArg]!)
+      // A negative width from an argument means '-' and its absolute value.
       if (width < 0) {
         flags += '-'
         width = -width
       }
-    } else while (fmt[i + 1]! >= 0x30 && fmt[i + 1]! <= 0x39) width = width * 10 + fmt[++i]! - 0x30
-    let precision = -1
-    if (fmt[i + 1] === 0x2e) {
-      i++
-      precision = 0
-      if (fmt[i + 1] === 0x2a) {
-        i++
-        precision = i32(arg())
-        if (precision < 0) precision = -1
-      } else while (fmt[i + 1]! >= 0x30 && fmt[i + 1]! <= 0x39) precision = precision * 10 + fmt[++i]! - 0x30
     }
-    let length = ''
-    while (i + 1 < fmt.length && 'hljztLq'.includes(String.fromCharCode(fmt[i + 1]!))) length += String.fromCharCode(fmt[++i]!)
-    const conv = String.fromCharCode(fmt[++i] ?? 0)
-    const bits = length === 'hh' ? 8 : length === 'h' ? 16 : length === '' ? 32 : 64
-    const pad = (body: number[], prefix: number[] = [], zeroOk = true) => {
-      const n = prefix.length + body.length
-      if (n >= width) return out.push(...prefix, ...body)
-      const fill = width - n
-      if (flags.includes('-')) out.push(...prefix, ...body, ...Array(fill).fill(0x20))
-      else if (flags.includes('0') && zeroOk) out.push(...prefix, ...Array(fill).fill(0x30), ...body)
-      else out.push(...Array(fill).fill(0x20), ...prefix, ...body)
+    let precision = s.precision
+    if (s.precArg >= 0) precision = Math.max(-1, i32(values[s.precArg]!))
+    const left = flags.includes('-')
+    const v = s.arg >= 0 ? values[s.arg]! : 0n
+    /** prefix (sign, 0x), then `zeros` zeros, then the body, padded to the width. */
+    const pad = (body: ArrayLike<number>, prefix: number[] = [], zeros = 0, zeroOk = false) => {
+      const fill = width - prefix.length - zeros - body.length
+      if (!left && !(zeroOk && flags.includes('0'))) out.fill(0x20, fill)
+      out.add(prefix)
+      if (!left && zeroOk && flags.includes('0')) out.fill(0x30, fill)
+      out.fill(0x30, zeros)
+      out.add(body)
+      if (left) out.fill(0x20, fill)
     }
-    const digits = (v: bigint, radix: number, upper: boolean): number[] => {
-      let s = v.toString(radix)
-      if (upper) s = s.toUpperCase()
-      if (precision === 0 && v === 0n) s = ''
-      if (precision > s.length) s = '0'.repeat(precision - s.length) + s
-      return [...s].map((c) => c.charCodeAt(0))
+    const bits = s.length === 'hh' ? 8 : s.length === 'h' ? 16 : s.length === '' ? 32 : 64
+    /** An integer: its digits, with the precision's leading zeros (none for a zero with precision 0). */
+    const integer = (n: bigint, radix: number, prefix: number[], upper = false, alt = false) => {
+      let digits = precision === 0 && n === 0n ? '' : n.toString(radix)
+      if (upper) digits = digits.toUpperCase()
+      let zeros = Math.max(0, precision - digits.length)
+      // '#' with o makes the first digit a zero.
+      if (alt && zeros === 0 && digits[0] !== '0') zeros = 1
+      // A precision turns off the '0' flag.
+      pad(ascii(digits), prefix, zeros, precision < 0)
     }
-    switch (conv) {
+    const sign = (neg: boolean) => (neg ? [0x2d] : flags.includes('+') ? [0x2b] : flags.includes(' ') ? [0x20] : [])
+    switch (s.conv) {
       case 'd':
       case 'i': {
-        const v = BigInt.asIntN(bits, arg())
-        const sign = v < 0n ? [0x2d] : flags.includes('+') ? [0x2b] : flags.includes(' ') ? [0x20] : []
-        pad(digits(v < 0n ? -v : v, 10, false), sign, precision < 0)
+        const n = BigInt.asIntN(bits, v)
+        integer(n < 0n ? -n : n, 10, sign(n < 0n))
         break
       }
       case 'u':
+        integer(BigInt.asUintN(bits, v), 10, [])
+        break
+      case 'o':
+        integer(BigInt.asUintN(bits, v), 8, [], false, flags.includes('#'))
+        break
       case 'x':
-      case 'X':
-      case 'o': {
-        const v = BigInt.asUintN(bits, arg())
-        const radix = conv === 'u' ? 10 : conv === 'o' ? 8 : 16
-        let body = digits(v, radix, conv === 'X')
-        let prefix: number[] = []
-        if (flags.includes('#') && conv === 'o' && body[0] !== 0x30) body = [0x30, ...body]
-        if (flags.includes('#') && (conv === 'x' || conv === 'X') && v !== 0n) prefix = conv === 'x' ? [0x30, 0x78] : [0x30, 0x58]
-        pad(body, prefix, precision < 0)
+      case 'X': {
+        const n = BigInt.asUintN(bits, v)
+        integer(n, 16, flags.includes('#') && n ? ascii(`0${s.conv}`) : [], s.conv === 'X')
         break
       }
+      case 'p':
+        // glibc prints a pointer as %#lx, keeping the '+' and ' ' flags; NULL is "(nil)".
+        if (v === 0n) pad(ascii('(nil)'))
+        else integer(v, 16, [...sign(false), 0x30, 0x78])
+        break
       case 'c':
-        pad([Number(arg() & 0xffn)], [], false)
+        pad([Number(v & 0xffn)])
         break
       case 's': {
-        const p = arg()
-        let s = p === 0n ? [...toUtf8('(null)')] : [...readCString(h, p)]
-        if (precision >= 0) s = s.slice(0, precision)
-        pad(s, [], false)
+        // NULL prints as "(null)", or as nothing when the precision is too short for all of it.
+        const text = v !== 0n ? readCString(h, v, precision < 0 ? 1 << 20 : precision) : precision < 0 || precision >= 6 ? ascii('(null)') : []
+        pad(text)
         break
       }
-      case 'p': {
-        const v = arg()
-        if (v === 0n) pad([...toUtf8('(nil)')], [], false)
-        else pad(digits(v, 16, false), [0x30, 0x78], false)
+      case 'n': {
+        // The number of bytes so far, stored at the pointer in the argument's size.
+        const size = s.length === 'hh' ? 1 : s.length === 'h' ? 2 : s.length === '' ? 4 : 8
+        h.store(v, size, BigInt.asUintN(size * 8, BigInt(out.count)))
         break
       }
       case '%':
-        out.push(0x25)
+        out.add([0x25])
         break
       case 'f':
       case 'F':
@@ -149,29 +264,96 @@ function format(h: Host, fmt: Uint8Array, args: Args, first: number): number[] {
       case 'a':
       case 'A': {
         // float arguments arrive promoted to double; %Lf takes a long double (binary128) from a q register.
-        const quad = length === 'L'
-        const raw = fpArg(quad)
-        const r = formatFloat(quad ? raw : raw & M64, quad ? F128 : F64, conv, flags, precision)
-        const hex = conv === 'a' || conv === 'A'
-        const body = hex && !r.special ? r.body.slice(2) : r.body
-        pad([...toUtf8(body)], [...toUtf8(r.sign + (hex && !r.special ? r.body.slice(0, 2) : ''))], !r.special)
+        const quad = s.length === 'L'
+        // Digits past FLOAT_DIGITS are zeros: format with fewer and add the zeros back (before the exponent).
+        const capped = Math.min(precision, FLOAT_DIGITS)
+        const r = formatFloat(quad ? v : v & M64, quad ? F128 : F64, s.conv, flags, capped)
+        const hex = s.conv === 'a' || s.conv === 'A'
+        const prefix = ascii(r.sign + (hex && !r.special ? r.body.slice(0, 2) : ''))
+        let body = ascii(hex && !r.special ? r.body.slice(2) : r.body)
+        const extra = r.special || ((s.conv === 'g' || s.conv === 'G') && !flags.includes('#')) ? 0 : precision - capped
+        if (extra > 0) {
+          const e = body.findIndex((b) => b === 0x65 || b === 0x45 || b === 0x70 || b === 0x50)
+          const cut = e < 0 ? body.length : e
+          const tail = body.slice(cut)
+          body = body.slice(0, cut)
+          // The zeros go between the digits and the exponent: pad with them by hand.
+          const fill = width - prefix.length - body.length - extra - tail.length
+          if (!left && !flags.includes('0')) out.fill(0x20, fill)
+          out.add(prefix)
+          if (!left && flags.includes('0')) out.fill(0x30, fill)
+          out.add(body)
+          out.fill(0x30, extra)
+          out.add(tail)
+          if (left) out.fill(0x20, fill)
+        } else pad(body, prefix, 0, !r.special)
         break
       }
-      default:
-        out.push(...fmt.subarray(start, i + 1))
+      default: {
+        // An unknown conversion prints itself back, as glibc rebuilds it: flags, width, precision.
+        const pad0 = flags.includes('0') && !left
+        let t = '%'
+        if (flags.includes('#')) t += '#'
+        if (flags.includes("'")) t += "'"
+        if (flags.includes('+')) t += '+'
+        else if (flags.includes(' ')) t += ' '
+        if (left) t += '-'
+        if (pad0) t += '0'
+        if (flags.includes('I')) t += 'I'
+        if (width) t += width
+        if (precision >= 0) t += `.${precision}`
+        out.add([...ascii(t), fmt[s.end - 1]!])
+      }
     }
   }
-  return out
+  out.add(fmt.subarray(at))
+  return { out, failed: out.count > INT_MAX }
 }
 
 /* ------------------------------------------------------------------ scanf */
 
 const isSpace = (b: number) => b === 0x20 || (b >= 9 && b <= 13)
+const EOF = -1
 
-/** Scan the typed input like scanf; pointers start at slot `first`. Returns the number of assignments. */
+/** Where scanf reads from: the typed input or a string. `peek` and `next` give EOF (-1) at the end. */
+interface Source {
+  peek(): number
+  next(): number
+  /** Bytes consumed so far (for %n). */
+  count: number
+}
+
+const stdin = (h: Host): Source => {
+  const s: Source = {
+    peek: () => h.peekByte(),
+    next: () => {
+      s.count++
+      return h.nextByte()
+    },
+    count: 0,
+  }
+  return s
+}
+
+function bytesSource(bytes: Uint8Array): Source {
+  const s: Source = {
+    peek: () => (s.count < bytes.length ? bytes[s.count]! : EOF),
+    next: () => (s.count < bytes.length ? bytes[s.count++]! : EOF),
+    count: 0,
+  }
+  return s
+}
+
+const digitValue = (b: number) => (b >= 0x30 && b <= 0x39 ? b - 0x30 : (b | 0x20) >= 0x61 && (b | 0x20) <= 0x7a ? (b | 0x20) - 0x61 + 10 : 99)
+
+/**
+ * Scan like glibc's scanf; pointers start at slot `first`. Returns the number of assignments, or EOF when
+ * the input ends before the first one (a mismatch is not an end: it returns what was assigned so far).
+ */
 function scan(h: Host, fmt: Uint8Array, args: Args, first: number, src: Source): number {
   let next = first
-  let assigned = 0
+  let done = 0
+  const ended = () => (done === 0 ? EOF : done)
   for (let i = 0; i < fmt.length; i++) {
     const ch = fmt[i]!
     if (isSpace(ch)) {
@@ -179,122 +361,133 @@ function scan(h: Host, fmt: Uint8Array, args: Args, first: number, src: Source):
       continue
     }
     if (ch !== 0x25) {
-      if (src.peek() !== ch) return assigned
+      if (src.peek() === EOF) return ended()
+      if (src.peek() !== ch) return done
       src.next()
       continue
     }
-    let suppress = false
-    if (fmt[i + 1] === 0x2a) {
-      suppress = true
-      i++
+    // %[n$][*][width][length]conversion
+    let j = i + 1
+    let pos = -1
+    let n = 0
+    let k = j
+    for (; isDigit(fmt[k]); k++) n = Math.min(n * 10 + fmt[k]! - 0x30, INT_MAX)
+    if (k > j && fmt[k] === 0x24 && n > 0) {
+      pos = n - 1
+      j = k + 1
     }
+    const suppress = fmt[j] === 0x2a
+    if (suppress) j++
     let width = 0
-    while (fmt[i + 1]! >= 0x30 && fmt[i + 1]! <= 0x39) width = width * 10 + fmt[++i]! - 0x30
-    let length = ''
-    while (i + 1 < fmt.length && 'hljztLq'.includes(String.fromCharCode(fmt[i + 1]!))) length += String.fromCharCode(fmt[++i]!)
-    const conv = String.fromCharCode(fmt[++i] ?? 0)
-    const size = length === 'hh' ? 1 : length === 'h' ? 2 : length === '' ? 4 : 8
+    for (; isDigit(fmt[j]); j++) width = Math.min(width * 10 + fmt[j]! - 0x30, INT_MAX)
     const max = width || Infinity
+    let length = ''
+    const two = String.fromCharCode(fmt[j] ?? 0, fmt[j + 1] ?? 0)
+    if (two === 'hh' || two === 'll') length = two
+    else if ('hlLqjzZt'.includes(two[0]!)) length = two[0]!
+    j += length.length
+    const conv = String.fromCharCode(fmt[j] ?? 0)
+    i = j
+    const size = length === 'hh' ? 1 : length === 'h' ? 2 : length === '' ? 4 : 8
+    const target = () => (pos >= 0 ? args(first + pos) : args(next++))
+    // Every conversion but %c, %[ and %n skips white space first.
+    if (conv !== 'c' && conv !== '[' && conv !== 'n') while (isSpace(src.peek())) src.next()
     switch (conv) {
       case '%':
-        while (isSpace(src.peek())) src.next()
-        if (src.peek() !== 0x25) return assigned
+        if (src.peek() === EOF) return ended()
+        if (src.peek() !== 0x25) return done
         src.next()
         break
+      case 'n':
+        if (!suppress) h.store(target(), size, BigInt.asUintN(size * 8, BigInt(src.count)))
+        break
+      case 'c': {
+        if (src.peek() === EOF) return ended()
+        const want = width || 1
+        const bytes: number[] = []
+        while (bytes.length < want && src.peek() !== EOF) bytes.push(src.next())
+        const p = suppress ? 0n : target()
+        if (!suppress) writeBytes(h, p, bytes)
+        // Fewer characters than the width is an input failure (what was read is stored, but not counted).
+        if (bytes.length < want) return ended()
+        if (!suppress) done++
+        break
+      }
+      case 's':
+      case '[': {
+        let set: Set<number> | null = null
+        let negate = false
+        if (conv === '[') {
+          // A ']' or '-' first is a member; 'a-z' is a range when a <= z, otherwise three members.
+          set = new Set()
+          if (fmt[i + 1] === 0x5e) {
+            negate = true
+            i++
+          }
+          if (fmt[i + 1] === 0x5d || fmt[i + 1] === 0x2d) set.add(fmt[++i]!)
+          for (;;) {
+            const c = fmt[++i]
+            if (c === undefined) return done
+            if (c === 0x5d) break
+            if (c === 0x2d && fmt[i + 1] !== undefined && fmt[i + 1] !== 0x5d && fmt[i - 1]! <= fmt[i + 1]!) for (let b = fmt[i - 1]!; b < fmt[i + 1]!; b++) set.add(b)
+            else set.add(c)
+          }
+        }
+        if (src.peek() === EOF) return ended()
+        const takes = (b: number) => b !== EOF && (set ? set.has(b) !== negate : !isSpace(b))
+        const bytes: number[] = []
+        while (bytes.length < max && takes(src.peek())) bytes.push(src.next())
+        if (!bytes.length) return done
+        if (!suppress) {
+          writeBytes(h, target(), [...bytes, 0])
+          done++
+        }
+        break
+      }
       case 'd':
       case 'i':
       case 'u':
+      case 'o':
       case 'x':
       case 'X':
-      case 'o': {
-        while (isSpace(src.peek())) src.next()
-        let text = ''
-        let n = 0
-        if ((src.peek() === 0x2d || src.peek() === 0x2b) && n < max) {
-          text += String.fromCharCode(src.next())
-          n++
+      case 'p': {
+        if (src.peek() === EOF) return ended()
+        let left = max
+        let neg = false
+        if (src.peek() === 0x2d || src.peek() === 0x2b) {
+          neg = src.next() === 0x2d
+          left--
         }
-        let radix = conv === 'x' || conv === 'X' ? 16 : conv === 'o' ? 8 : 10
-        if (conv === 'i' && src.peek() === 0x30 && n < max) {
-          text += String.fromCharCode(src.next())
-          n++
-          radix = 8
-          if ((src.peek() | 0x20) === 0x78 && n < max) {
+        let base = conv === 'i' ? 0 : conv === 'o' ? 8 : conv === 'd' || conv === 'u' ? 10 : 16
+        let digits = ''
+        if (left > 0 && src.peek() === 0x30 && (base === 0 || base === 16)) {
+          src.next()
+          left--
+          digits = '0'
+          if (left > 0 && (src.peek() | 0x20) === 0x78) {
+            // "0x" is a prefix, not a digit: with no hex digits after it, nothing was converted.
             src.next()
-            n++
-            radix = 16
-            text = text.slice(0, -1)
-          }
-        } else if (radix === 16 && src.peek() === 0x30 && n < max) {
-          text += String.fromCharCode(src.next())
-          n++
-          if ((src.peek() | 0x20) === 0x78 && n < max) {
-            src.next()
-            n++
-            text = text.slice(0, -1)
-          }
+            left--
+            digits = ''
+            base = 16
+          } else if (base === 0) base = 8
         }
-        const valid = (b: number) => {
-          const d = b >= 0x30 && b <= 0x39 ? b - 0x30 : (b | 0x20) >= 0x61 && (b | 0x20) <= 0x7a ? (b | 0x20) - 0x61 + 10 : 99
-          return d < radix
+        if (base === 0) base = 10
+        while (left > 0 && digitValue(src.peek()) < base) {
+          digits += String.fromCharCode(src.next())
+          left--
         }
-        while (n < max && valid(src.peek())) {
-          text += String.fromCharCode(src.next())
-          n++
-        }
-        const body = text.replace(/^[+-]/, '')
-        if (!body) return assigned
-        let v = BigInt(radix === 10 ? body : (radix === 16 ? '0x' : '0o') + body)
-        if (text.startsWith('-')) v = -v
+        if (!digits) return done
+        // As glibc, through strtol (d, i) or strtoul (the others): out-of-range values clamp, then the
+        // value is cut to the destination's size.
+        const mag = [...digits].reduce((acc, c) => acc * BigInt(base) + BigInt(digitValue(c.charCodeAt(0))), 0n)
+        let value: bigint
+        if (conv === 'd' || conv === 'i') value = neg ? (mag > 1n << 63n ? -(1n << 63n) : -mag) : mag >= 1n << 63n ? (1n << 63n) - 1n : mag
+        else value = mag > M64 ? M64 : neg ? -mag : mag
         if (!suppress) {
-          h.store(args(next++), size, BigInt.asUintN(size * 8, v))
-          assigned++
-        }
-        break
-      }
-      case 'c': {
-        const n = width || 1
-        const bytes: number[] = []
-        for (let k = 0; k < n; k++) bytes.push(src.next())
-        if (!suppress) {
-          writeBytes(h, args(next++), bytes)
-          assigned++
-        }
-        break
-      }
-      case 's': {
-        while (isSpace(src.peek())) src.next()
-        const bytes: number[] = []
-        while (bytes.length < max && !isSpace(src.peek())) bytes.push(src.next())
-        if (!suppress) {
-          writeBytes(h, args(next++), [...bytes, 0])
-          assigned++
-        }
-        break
-      }
-      case '[': {
-        let negate = false
-        if (fmt[i + 1] === 0x5e) {
-          negate = true
-          i++
-        }
-        const set = new Set<number>()
-        if (fmt[i + 1] === 0x5d) set.add(fmt[++i]!)
-        while (i + 1 < fmt.length && fmt[i + 1] !== 0x5d) {
-          const a = fmt[++i]!
-          if (fmt[i + 1] === 0x2d && fmt[i + 2] !== undefined && fmt[i + 2] !== 0x5d) {
-            const b = fmt[i + 2]!
-            for (let c = a; c <= b; c++) set.add(c)
-            i += 2
-          } else set.add(a)
-        }
-        i++
-        const bytes: number[] = []
-        while (bytes.length < max && set.has(src.peek()) !== negate) bytes.push(src.next())
-        if (!bytes.length) return assigned
-        if (!suppress) {
-          writeBytes(h, args(next++), [...bytes, 0])
-          assigned++
+          const bytes = conv === 'p' ? 8 : size
+          h.store(target(), bytes, BigInt.asUintN(bytes * 8, value))
+          done++
         }
         break
       }
@@ -306,35 +499,23 @@ function scan(h: Host, fmt: Uint8Array, args: Args, first: number, src: Source):
       case 'G':
       case 'a':
       case 'A': {
-        while (isSpace(src.peek())) src.next()
+        if (src.peek() === EOF) return ended()
         let text = ''
-        while (text.length < max && src.peek() !== 0 && numberPrefix(text + String.fromCharCode(src.peek()))) text += String.fromCharCode(src.next())
-        const target = length === 'L' ? F128 : length === 'l' ? F64 : F32
-        const bits = parseFloatBits(text, target)
-        if (bits === null) return assigned
+        while (text.length < max && src.peek() !== EOF && numberPrefix(text + String.fromCharCode(src.peek()))) text += String.fromCharCode(src.next())
+        const fmtOf = length === 'L' ? F128 : length === 'l' ? F64 : F32
+        const bits = parseFloatBits(text, fmtOf)
+        if (bits === null) return done
         if (!suppress) {
-          h.store(args(next++), target.n / 8, bits)
-          assigned++
+          h.store(target(), fmtOf.n / 8, bits)
+          done++
         }
         break
       }
       default:
-        return assigned
+        return done
     }
   }
-  return assigned
-}
-
-interface Source {
-  peek(): number
-  next(): number
-}
-
-const stdin = (h: Host): Source => ({ peek: () => h.peekByte(), next: () => h.nextByte() })
-function bytesSource(bytes: Uint8Array): Source {
-  let i = 0
-  // A NUL past the end reads as "no more input": it is neither a space nor a digit.
-  return { peek: () => (i < bytes.length ? bytes[i]! : 0), next: () => (i < bytes.length ? bytes[i++]! : 0) }
+  return done
 }
 
 /* ------------------------------------------------------------------ malloc */
@@ -402,7 +583,9 @@ function step(s: { ring: readonly number[]; at: number }): [{ ring: number[]; at
 
 /* ------------------------------------------------------------------ helpers */
 
-function strtol(h: Host, p: bigint, base: number): { value: bigint; end: bigint } {
+/** strtol: null for a base other than 0 and 2–36 (glibc then returns 0 and leaves *end alone). */
+function strtol(h: Host, p: bigint, base: number): { value: bigint; end: bigint } | null {
+  if (base < 0 || base === 1 || base > 36) return null
   let i = 0n
   const at = () => Number(h.load(p + i, 1))
   while (isSpace(at())) i++
@@ -411,25 +594,31 @@ function strtol(h: Host, p: bigint, base: number): { value: bigint; end: bigint 
     neg = at() === 0x2d
     i++
   }
+  let hex = false
   if ((base === 0 || base === 16) && at() === 0x30 && (Number(h.load(p + i + 1n, 1)) | 0x20) === 0x78) {
     i += 2n
     base = 16
+    hex = true
   } else if (base === 0) base = at() === 0x30 ? 8 : 10
   let v = 0n
   let any = false
   for (;;) {
-    const b = at()
-    const d = b >= 0x30 && b <= 0x39 ? b - 0x30 : (b | 0x20) >= 0x61 && (b | 0x20) <= 0x7a ? (b | 0x20) - 0x61 + 10 : 99
+    const d = digitValue(at())
     if (d >= base) break
     v = v * BigInt(base) + BigInt(d)
     any = true
     i++
   }
   if (v > 0x7fffffffffffffffn) v = neg ? 0x8000000000000000n : 0x7fffffffffffffffn
-  return { value: neg ? -v : v, end: any ? p + i : p }
+  // "0x" with no hex digit after it converts the "0": *end points at the 'x'.
+  return { value: neg ? -v : v, end: any ? p + i : hex ? p + i - 1n : p }
 }
 
-const out = (h: Host, bytes: ArrayLike<number>) => h.out(utf8.decode(Uint8Array.from(bytes as number[])))
+/** Copy n bytes one at a time, so a bad range faults where the real copy would. */
+function copy(h: Host, dst: bigint, src: bigint, n: bigint, backwards: boolean): void {
+  if (backwards) for (let i = n - 1n; i >= 0n; i--) h.store(dst + i, 1, h.load(src + i, 1))
+  else for (let i = 0n; i < n; i++) h.store(dst + i, 1, h.load(src + i, 1))
+}
 
 /* ------------------------------------------------------------------ the functions */
 
@@ -437,11 +626,15 @@ export const LIBC: LibcFunction[] = [
   {
     name: 'printf',
     proto: 'int printf(const char *format, ...)',
-    desc: T('按格式输出：%d %i %u %x %X %o %c %s %p %%，可带宽度、精度、标志和 hh/h/l/ll 长度', 'Formatted output: %d %i %u %x %X %o %c %s %p %%, with width, precision, flags and hh/h/l/ll lengths'),
+    desc: T(
+      '按格式输出：%d %i %u %x %X %o %c %s %p %n %% 和浮点数 %f %e %g %a，可带标志、宽度、精度（包括 *）、长度 hh h l ll z j t L 和位置参数 %1$d；返回输出的字节数',
+      'Formatted output: %d %i %u %x %X %o %c %s %p %n %% and floats %f %e %g %a, with flags, width and precision (also *), lengths hh h l ll z j t L and positional arguments %1$d; returns the number of bytes',
+    ),
     run: (h, a) => {
-      const bytes = format(h, readCString(h, a(0)), a, 1)
-      out(h, bytes)
-      return BigInt(bytes.length)
+      const { out, failed } = format(h, readCString(h, a(0)), a, 1, MAX_OUT, 'printf')
+      if (failed) return M64
+      writeTerminal(h, out.bytes)
+      return BigInt(out.count)
     },
   },
   {
@@ -449,9 +642,9 @@ export const LIBC: LibcFunction[] = [
     proto: 'int sprintf(char *str, const char *format, ...)',
     desc: T('按格式写进字符串（末尾加 0）', 'Formatted output into a string (with a terminating 0)'),
     run: (h, a) => {
-      const bytes = format(h, readCString(h, a(1)), a, 2)
-      writeBytes(h, a(0), [...bytes, 0])
-      return BigInt(bytes.length)
+      const { out, failed } = format(h, readCString(h, a(1)), a, 2, MAX_OUT, 'sprintf')
+      writeBytes(h, a(0), [...out.bytes, 0])
+      return failed ? M64 : BigInt(out.count)
     },
   },
   {
@@ -459,19 +652,22 @@ export const LIBC: LibcFunction[] = [
     proto: 'int snprintf(char *str, size_t size, const char *format, ...)',
     desc: T('按格式写进字符串，最多写 size − 1 个字符；返回完整结果的长度', 'Formatted output into a string, at most size − 1 characters; returns the full length'),
     run: (h, a) => {
-      const bytes = format(h, readCString(h, a(2)), a, 3)
-      const size = Number(a(1) > 0x10000000n ? 0x10000000n : a(1))
-      if (size > 0) writeBytes(h, a(0), [...bytes.slice(0, size - 1), 0])
-      return BigInt(bytes.length)
+      const size = a(1)
+      // Only what fits is kept; the rest is counted for the result.
+      const small = size <= BigInt(MAX_OUT)
+      const { out, failed } = format(h, readCString(h, a(2)), a, 3, small ? Math.max(0, Number(size) - 1) : MAX_OUT, small ? null : 'snprintf')
+      if (size > 0n) writeBytes(h, a(0), [...out.bytes, 0])
+      return failed ? M64 : BigInt(out.count)
     },
   },
   {
     name: 'puts',
     proto: 'int puts(const char *s)',
-    desc: T('输出字符串，再输出换行', 'Print a string and a newline'),
+    desc: T('输出字符串，再输出换行；返回输出的字节数', 'Print a string and a newline; returns the number of bytes'),
     run: (h, a) => {
-      out(h, [...readCString(h, a(0)), 10])
-      return 1n
+      const s = readCString(h, a(0))
+      writeTerminal(h, [...s, 10])
+      return BigInt(s.length + 1)
     },
   },
   {
@@ -479,21 +675,24 @@ export const LIBC: LibcFunction[] = [
     proto: 'int putchar(int c)',
     desc: T('输出一个字符（字节）', 'Print one character (byte)'),
     run: (h, a) => {
-      out(h, [Number(a(0) & 0xffn)])
+      writeTerminal(h, [Number(a(0) & 0xffn)])
       return a(0) & 0xffn
     },
   },
   {
     name: 'scanf',
     proto: 'int scanf(const char *format, ...)',
-    desc: T('按格式读入：%d %i %u %x %o %c %s %[…]，可带宽度、* 和 hh/h/l/ll；返回成功读入的个数', 'Formatted input: %d %i %u %x %o %c %s %[…], with width, * and hh/h/l/ll; returns how many were read'),
-    run: (h, a) => BigInt(scan(h, readCString(h, a(0)), a, 1, stdin(h))),
+    desc: T(
+      '按格式读入：%d %i %u %x %o %p %c %s %[…] %n %% 和浮点数 %f %e %g %a，可带宽度、*、长度 hh h l ll z j t L 和位置参数；返回成功存入的个数',
+      'Formatted input: %d %i %u %x %o %p %c %s %[…] %n %% and floats %f %e %g %a, with width, *, lengths hh h l ll z j t L and positional arguments; returns how many were stored',
+    ),
+    run: (h, a) => u64(scan(h, readCString(h, a(0)), a, 1, stdin(h))),
   },
   {
     name: 'sscanf',
     proto: 'int sscanf(const char *str, const char *format, ...)',
-    desc: T('像 scanf 一样，从字符串里读', 'Like scanf, reading from a string'),
-    run: (h, a) => BigInt(scan(h, readCString(h, a(1)), a, 2, bytesSource(readCString(h, a(0))))),
+    desc: T('像 scanf 一样，从字符串里读；字符串在第一次存入之前就结束时返回 EOF（−1）', 'Like scanf, reading from a string; returns EOF (−1) when the string ends before the first value is stored'),
+    run: (h, a) => u64(scan(h, readCString(h, a(1)), a, 2, bytesSource(readCString(h, a(0))))),
   },
   {
     name: 'getchar',
@@ -533,9 +732,14 @@ export const LIBC: LibcFunction[] = [
       }
       const old = h.os.allocs[findBlock(h, p, 'realloc')]!
       const bytes = readBytes(h, p, Math.min(old.size, Number(n)))
+      const before = h.os
       free(h, p, 'realloc')
       const q = malloc(h, n)
-      if (q === 0n) return 0n
+      // On failure the old block stays as it was.
+      if (q === 0n) {
+        h.os = before
+        return 0n
+      }
       writeBytes(h, q, bytes)
       return q
     },
@@ -609,9 +813,12 @@ export const LIBC: LibcFunction[] = [
     proto: 'char *strncpy(char *dst, const char *src, size_t n)',
     desc: T('最多复制 n 个字节，不够的用 0 补齐', 'Copy at most n bytes, padding with zeros'),
     run: (h, a) => {
-      const n = Number(a(2))
-      const s = [...readCString(h, a(1), n)]
-      writeBytes(h, a(0), [...s, ...Array(Math.max(0, n - s.length)).fill(0)].slice(0, n))
+      let end = false
+      for (let i = 0n; i < a(2); i++) {
+        const b: bigint = end ? 0n : h.load(a(1) + i, 1)
+        end ||= b === 0n
+        h.store(a(0) + i, 1, b)
+      }
       return a(0)
     },
   },
@@ -643,7 +850,7 @@ export const LIBC: LibcFunction[] = [
     proto: 'void *memcpy(void *dst, const void *src, size_t n)',
     desc: T('复制 n 个字节，返回 dst', 'Copy n bytes; returns dst'),
     run: (h, a) => {
-      writeBytes(h, a(0), readBytes(h, a(1), Number(a(2))))
+      copy(h, a(0), a(1), a(2), false)
       return a(0)
     },
   },
@@ -652,7 +859,8 @@ export const LIBC: LibcFunction[] = [
     proto: 'void *memmove(void *dst, const void *src, size_t n)',
     desc: T('复制 n 个字节，两块内存可以重叠', 'Copy n bytes; the two blocks may overlap'),
     run: (h, a) => {
-      writeBytes(h, a(0), readBytes(h, a(1), Number(a(2))))
+      // Copying from the end first when dst is above src never overwrites a byte before it is read.
+      copy(h, a(0), a(1), a(2), a(0) > a(1))
       return a(0)
     },
   },
@@ -661,7 +869,8 @@ export const LIBC: LibcFunction[] = [
     proto: 'void *memset(void *p, int c, size_t n)',
     desc: T('把 n 个字节都设成 c，返回 p', 'Set n bytes to c; returns p'),
     run: (h, a) => {
-      writeBytes(h, a(0), new Uint8Array(Number(a(2))).fill(Number(a(1) & 0xffn)))
+      const c = a(1) & 0xffn
+      for (let i = 0n; i < a(2); i++) h.store(a(0) + i, 1, c)
       return a(0)
     },
   },
@@ -682,20 +891,21 @@ export const LIBC: LibcFunction[] = [
     name: 'atoi',
     proto: 'int atoi(const char *s)',
     desc: T('把十进制字符串转成整数', 'Convert a decimal string to an int'),
-    run: (h, a) => u64(BigInt.asIntN(32, strtol(h, a(0), 10).value)),
+    run: (h, a) => u64(BigInt.asIntN(32, strtol(h, a(0), 10)!.value)),
   },
   {
     name: 'atol',
     proto: 'long atol(const char *s)',
     desc: T('把十进制字符串转成 long（64 位）', 'Convert a decimal string to a long (64-bit)'),
-    run: (h, a) => u64(strtol(h, a(0), 10).value),
+    run: (h, a) => u64(strtol(h, a(0), 10)!.value),
   },
   {
     name: 'strtol',
     proto: 'long strtol(const char *s, char **end, int base)',
     desc: T('按进制 base（0 表示自动识别 0x、0 前缀）转换字符串，*end 指向没用到的部分', 'Convert a string in base base (0: detect 0x and 0 prefixes); *end points past the digits used'),
     run: (h, a) => {
-      const r = strtol(h, a(0), Number(a(2) & 0xffn))
+      const r = strtol(h, a(0), i32(a(2)))
+      if (!r) return 0n
       if (a(1) !== 0n) h.store(a(1), 8, r.end)
       return u64(r.value)
     },

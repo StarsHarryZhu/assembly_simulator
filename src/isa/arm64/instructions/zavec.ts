@@ -7,7 +7,6 @@
  * ZA row i × 2^es + t. A vertical slice is element i of each of a tile's rows.
  */
 import type { Cpu, Fields } from './types'
-import { elems, toBytes } from './vec'
 import * as sf from '../softfloat'
 
 /**
@@ -17,9 +16,9 @@ import * as sf from '../softfloat'
 export const zaEnv = (c: Cpu) => c.fpEnv().with(sf.DN)
 
 /** Elements of ZA row r. */
-export const zaGet = (c: Cpu, r: number, es: number): bigint[] => elems(c.zaRead(r), es)
+export const zaGet = (c: Cpu, r: number, es: number): bigint[] => c.zaLanes(r, es)
 /** Write elements to ZA row r. */
-export const zaSet = (c: Cpu, r: number, vals: bigint[], es: number): void => c.zaWrite(r, toBytes(vals, es))
+export const zaSet = (c: Cpu, r: number, vals: bigint[], es: number): void => c.zaSetLanes(r, vals, es)
 
 /** Rows (and columns) of a tile of element size es. */
 export const tileDim = (c: Cpu, es: number) => c.svl >> es

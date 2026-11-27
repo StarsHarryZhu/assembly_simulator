@@ -6,6 +6,9 @@ import { formatSource } from '../../src/isa/arm64/format'
 import { SYSCALLS } from '../../src/isa/arm64/linux'
 import { LIBC_FUNCTIONS } from '../../src/isa/arm64/libc'
 import { EC } from '../../src/isa/arm64/cpu'
+import { decodeView } from '../../src/isa/arm64/decoder'
+import { allInstrs, disassemble } from '../../src/isa/arm64/encoding/table'
+import { extract } from '../../src/isa/arm64/encoding/pattern'
 import { ConsoleEnv } from '../helpers'
 
 const CJK = /[　-鿿＀-￯]/
@@ -29,6 +32,33 @@ describe('both languages', () => {
       expect(t.zh.length, t.en).toBeGreaterThan(0)
       expect(CJK.test(t.en), t.en).toBe(false)
     }
+  })
+
+  it('describes every encoding in Chinese and English, and decodes and explains a word of each in English', () => {
+    const problems: string[] = []
+    let decoded = 0
+    for (const ins of allInstrs()) {
+      const d = ins.spec.desc
+      if (!CJK.test(d.zh) || CJK.test(d.en) || !d.en.trim()) problems.push(`${ins.spec.id}: ${d.zh} / ${d.en}`)
+      // One valid word of the encoding, from a fixed sequence over its free bits.
+      const free = ~ins.pattern.mask >>> 0
+      let s = 12345
+      for (let tries = 0; tries < 50; tries++) {
+        s = (s * 1103515245 + 12345) >>> 0
+        const word = (ins.pattern.value | (s & free)) >>> 0
+        if (ins.spec.valid && !ins.spec.valid(extract(ins.pattern, word))) continue
+        setLocale('en')
+        const v = decodeView(word)
+        const text = [...v.fields.flatMap((f) => [f.title, f.meaning]), ...v.notes].join(' ')
+        if (CJK.test(text)) problems.push(`${ins.spec.id}: decoder ${text}`)
+        const line = disassemble(word, { pc: 0x400000 })
+        if (line) for (const o of arm64.analyzeLine(line).operands) if (CJK.test(o.hint)) problems.push(`${ins.spec.id}: hint ${o.hint}`)
+        decoded++
+        break
+      }
+    }
+    expect(problems.slice(0, 20), `${problems.length} problems`).toEqual([])
+    expect(decoded).toBeGreaterThan(3400)
   })
 
   it('names a title for every catalog group in use', () => {
