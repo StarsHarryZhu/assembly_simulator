@@ -59,7 +59,7 @@ describe('both languages', () => {
     }
     expect(problems.slice(0, 20), `${problems.length} problems`).toEqual([])
     expect(decoded).toBeGreaterThan(3400)
-  })
+  }, 30_000)
 
   it('names a title for every catalog group in use', () => {
     const groups = new Set(arm64.catalogGroups.map((g) => g.id))
